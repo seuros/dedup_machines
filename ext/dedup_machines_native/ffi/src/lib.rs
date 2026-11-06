@@ -51,7 +51,8 @@ impl Ledger {
         ttl_ns: Number,
     ) -> Result<Value, Error> {
         this.check_frozen()?;
-        let outcome = this.core.borrow_mut().claim(
+        let mut core = this.core.borrow_mut();
+        let outcome = core.claim(
             key.0,
             Duration::from_nanos(now_ns.0),
             Duration::from_nanos(ttl_ns.0),
@@ -64,7 +65,7 @@ impl Ledger {
                 })
                 .as_value(),
             Claim::InProgress => ruby.to_symbol("in_progress").as_value(),
-            Claim::Completed => ruby.to_symbol("completed").as_value(),
+            Claim::Completed(()) => ruby.to_symbol("completed").as_value(),
             Claim::Full => ruby.to_symbol("full").as_value(),
             _ => ruby.to_symbol("rejected").as_value(),
         })

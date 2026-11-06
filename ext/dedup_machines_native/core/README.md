@@ -15,9 +15,18 @@ fencing or transactional storage is required for side effects. Completion does
 not extend TTL. `abandon` frees a matching pending claim after a known failure.
 Do not abandon an uncertain external effect and assume a retry is safe.
 
-This initial in-memory ledger has no persistence, cached response payloads,
-cross-process arbitration, or wire checkpoint format. Handles are scoped to one
-ledger lifetime; replacing the ledger resets its namespace.
+Completion may carry a value: `complete_with` stores it and every later claim
+of that key reads it back as `Completed(&value)`. Claims may carry a
+fingerprint of their payload: a record under the same key with a different
+fingerprint (or none) answers `Conflict`, so an id reused for another payload is
+refused instead of replayed. Claims may name a partition; with a partition cap
+set, a bucket at its quota answers `PartitionFull` while the table still has
+room. `expire_where` drops records whose owner is known to be gone before their
+TTL would.
+
+This in-memory ledger has no persistence, cross-process arbitration, or wire
+checkpoint format. Handles are scoped to one ledger lifetime; replacing the
+ledger resets its namespace.
 
 ```rust
 use core::time::Duration;
@@ -26,5 +35,26 @@ let mut ledger = Dedup::<u64, 8>::new();
 let Claim::Acquired(id) = ledger.claim(42, Duration::ZERO, Duration::from_secs(30))
     else { panic!("fresh key must fit"); };
 assert!(ledger.complete(id, Duration::ZERO));
-assert_eq!(ledger.claim(42, Duration::ZERO, Duration::from_secs(30)), Claim::Completed);
+assert_eq!(ledger.claim(42, Duration::ZERO, Duration::from_secs(30)), Claim::Completed(&()));
+```
+
+The `alloc` feature (`std` implies it) adds `HashDedup`, the same ledger over a
+heap table with a runtime capacity and hashed lookup, for keys that are not
+`Copy`:
+
+```rust
+# #[cfg(feature = "alloc")] {
+use core::time::Duration;
+use dedup_machines::{Attempt, Claim, HashDedup};
+let mut ledger = HashDedup::<String, String>::with_capacity(1024).with_partition_cap(128);
+let relay = |session: u64, source: &str| Attempt::new(format!("{session}/{source}")).partition(session);
+let Claim::Acquired(id) = ledger.admit(relay(7, "tool"), Duration::ZERO, Duration::from_secs(3600))
+    else { panic!("fresh key must fit"); };
+assert_eq!(ledger.complete_with(id, "elicit-1".into(), Duration::ZERO), Ok(()));
+assert_eq!(
+    ledger.admit(relay(7, "tool"), Duration::from_secs(1), Duration::from_secs(3600)),
+    Claim::Completed(&"elicit-1".to_string())
+);
+assert_eq!(ledger.expire_where(|key| key.starts_with("7/")), 1);
+# }
 ```
