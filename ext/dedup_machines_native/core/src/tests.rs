@@ -1,13 +1,5 @@
 use super::*;
-fn at(seconds: u64) -> Duration {
-    Duration::from_secs(seconds)
-}
-fn acquired<V>(claim: &Claim<'_, V>) -> ClaimId {
-    let Claim::Acquired(id) = claim else {
-        panic!("expected acquired claim");
-    };
-    *id
-}
+use crate::test_support::{acquired, at};
 
 #[test]
 fn lifecycle_is_exact_and_full_tables_do_not_evict() {

@@ -2,17 +2,8 @@ use alloc::string::{String, ToString};
 use core::time::Duration;
 
 use super::*;
+use crate::test_support::{acquired, at};
 use crate::{Attempt, Claim, ClaimId};
-
-fn at(seconds: u64) -> Duration {
-    Duration::from_secs(seconds)
-}
-fn acquired<V>(claim: &Claim<'_, V>) -> ClaimId {
-    let Claim::Acquired(id) = claim else {
-        panic!("expected acquired claim");
-    };
-    *id
-}
 
 #[test]
 fn owned_keys_follow_the_fixed_lifecycle() {
