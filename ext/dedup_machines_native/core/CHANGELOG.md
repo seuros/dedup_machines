@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.4.0...dedup-machines-v0.4.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* satisfy the nursery option_if_let_else lint in Entry::new ([88cf1eb](https://github.com/seuros/dedup_machines/commit/88cf1ebadcbfac752ac6e20fb0d2ce07dae765e9))
+* share core test helpers via test_support ([0c94d57](https://github.com/seuros/dedup_machines/commit/0c94d57d888c41b77d4a11c9db346fc0587ee78c))
+
 ## [0.4.0](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.3.0...dedup-machines-v0.4.0) (2026-11-06)
 
 
