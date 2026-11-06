@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.2.1...dedup-machines-v0.2.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* crates.io keywords and categories for the core ([2c5c7ee](https://github.com/seuros/dedup_machines/commit/2c5c7eebc94e34f772bdd7508d12f7d79c334c81))
+
 ## [0.2.1](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.2.0...dedup-machines-v0.2.1) (2026-11-06)
 
 
