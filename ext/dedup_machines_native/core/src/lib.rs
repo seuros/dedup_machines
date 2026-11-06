@@ -79,7 +79,12 @@ enum State<V> {
     Completed(V),
 }
 
-#[doc(hidden)]
+/// One record in a [`Storage`] backend: a claimed key, its generation and
+/// expiry, and whether the claim is still pending or carries a completed value.
+///
+/// A [`Ledger`] builds entries and hands them to its storage; a backend that
+/// persists them elsewhere reads them back through the accessors and rebuilds
+/// them with [`Entry::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry<K, V> {
     key: K,
@@ -90,21 +95,104 @@ pub struct Entry<K, V> {
     state: State<V>,
 }
 
-mod sealed {
-    pub trait Sealed {}
+impl<K, V> Entry<K, V> {
+    /// Rebuild a stored record; `value` is `None` while the claim is pending.
+    #[must_use]
+    pub fn new(
+        key: K,
+        fingerprint: Option<u64>,
+        partition: Option<u64>,
+        generation: u64,
+        expires: Duration,
+        value: Option<V>,
+    ) -> Self {
+        let state = match value {
+            Some(value) => State::Completed(value),
+            None => State::Pending,
+        };
+        Self {
+            key,
+            fingerprint,
+            partition,
+            generation,
+            expires,
+            state,
+        }
+    }
+
+    /// The claimed key.
+    #[must_use]
+    pub const fn key(&self) -> &K {
+        &self.key
+    }
+
+    /// Payload fingerprint the key was claimed under, if any.
+    #[must_use]
+    pub const fn fingerprint(&self) -> Option<u64> {
+        self.fingerprint
+    }
+
+    /// Partition the record is counted against, if any.
+    #[must_use]
+    pub const fn partition(&self) -> Option<u64> {
+        self.partition
+    }
+
+    /// Generation the claim was issued with; stale [`ClaimId`]s carry an older one.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Instant after which the record is dropped on the next observation.
+    #[must_use]
+    pub const fn expires(&self) -> Duration {
+        self.expires
+    }
+
+    /// `true` while the claim is live and uncompleted.
+    #[must_use]
+    pub const fn is_pending(&self) -> bool {
+        matches!(self.state, State::Pending)
+    }
+
+    /// The completed value, once there is one.
+    #[must_use]
+    pub const fn value(&self) -> Option<&V> {
+        match &self.state {
+            State::Completed(value) => Some(value),
+            State::Pending => None,
+        }
+    }
 }
 
-#[doc(hidden)]
-pub trait Storage: sealed::Sealed {
+/// Where a [`Ledger`] keeps its records.
+///
+/// [`Fixed`] and [`Hashed`] are in-memory. Implement this to put the ledger
+/// over something else, such as a database table or a shared-memory arena;
+/// the ledger only ever addresses records by the slot `insert` returned.
+///
+/// Slots are opaque: a backend may reuse one after `remove`, because the
+/// ledger's generation check tells a stale [`ClaimId`] from a fresh record.
+pub trait Storage {
+    /// Claimed key type.
     type Key: Eq;
+    /// Value stored on completion.
     type Value;
 
+    /// The record at `slot`, if one is live.
     fn get(&self, slot: usize) -> Option<&Entry<Self::Key, Self::Value>>;
+    /// Mutable access to the record at `slot`, if one is live.
     fn get_mut(&mut self, slot: usize) -> Option<&mut Entry<Self::Key, Self::Value>>;
+    /// The slot holding `key`, if any.
     fn find(&self, key: &Self::Key) -> Option<usize>;
+    /// Store `entry` in a free slot, or `None` when the backend is full.
     fn insert(&mut self, entry: Entry<Self::Key, Self::Value>) -> Option<usize>;
+    /// Drop the record at `slot`; `false` when there was none.
     fn remove(&mut self, slot: usize) -> bool;
+    /// Drop every record `keep` rejects, returning how many were dropped.
     fn retain(&mut self, keep: impl FnMut(&Entry<Self::Key, Self::Value>) -> bool) -> usize;
+    /// Every live record, in no particular order.
     fn iter(&self) -> impl Iterator<Item = &Entry<Self::Key, Self::Value>>;
 }
 
@@ -113,8 +201,6 @@ pub trait Storage: sealed::Sealed {
 pub struct Fixed<K, V, const N: usize> {
     entries: [Option<Entry<K, V>>; N],
 }
-
-impl<K, V, const N: usize> sealed::Sealed for Fixed<K, V, N> {}
 
 impl<K: Eq, V, const N: usize> Storage for Fixed<K, V, N> {
     type Key = K;
@@ -189,13 +275,53 @@ impl<K: Eq, V, const N: usize> Dedup<K, N, V> {
 }
 
 impl<S: Storage> Ledger<S> {
-    pub(crate) const fn over(store: S) -> Self {
+    /// Start an empty ledger over `store` with a fresh handle namespace.
+    ///
+    /// The store is expected to be empty: records it already holds would
+    /// outrank every [`ClaimId`] this ledger issues. Use [`Ledger::restore`]
+    /// to continue a persisted one.
+    #[must_use]
+    pub const fn over(store: S) -> Self {
+        Self::restore(store, 0, Duration::ZERO)
+    }
+
+    /// Continue a ledger whose records live in `store`, from the highest
+    /// `generation` it ever issued and the last clock value it `observed`.
+    ///
+    /// Both must come from the same committed state as the records, so no
+    /// stored [`ClaimId`] can be reissued.
+    #[must_use]
+    pub const fn restore(store: S, generation: u64, observed: Duration) -> Self {
         Self {
             store,
-            generation: 0,
-            observed: Duration::ZERO,
+            generation,
+            observed,
             partition_cap: None,
         }
+    }
+
+    /// Highest generation issued so far; persist it with the records.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Latest clock value accepted; persist it with the records.
+    #[must_use]
+    pub const fn observed(&self) -> Duration {
+        self.observed
+    }
+
+    /// The storage backend, for a persisting adapter to read through.
+    #[must_use]
+    pub const fn store(&self) -> &S {
+        &self.store
+    }
+
+    /// Give the storage back, to persist or hand to [`Ledger::restore`].
+    #[must_use]
+    pub fn into_store(self) -> S {
+        self.store
     }
 
     /// Cap unexpired records per partition; attempts without a partition are uncounted.

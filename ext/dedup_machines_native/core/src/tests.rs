@@ -117,3 +117,89 @@ fn ownerless_records_expire_ahead_of_their_ttl() {
     ));
     assert!(ledger.complete(alive, at(1)));
 }
+
+/// A backend defined outside the crate: two slots, no hashing.
+struct Pair {
+    entries: [Option<Entry<u64, u8>>; 2],
+}
+
+impl Storage for Pair {
+    type Key = u64;
+    type Value = u8;
+
+    fn get(&self, slot: usize) -> Option<&Entry<u64, u8>> {
+        self.entries.get(slot)?.as_ref()
+    }
+
+    fn get_mut(&mut self, slot: usize) -> Option<&mut Entry<u64, u8>> {
+        self.entries.get_mut(slot)?.as_mut()
+    }
+
+    fn find(&self, key: &u64) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.as_ref().is_some_and(|entry| entry.key() == key))
+    }
+
+    fn insert(&mut self, entry: Entry<u64, u8>) -> Option<usize> {
+        let slot = self.entries.iter().position(Option::is_none)?;
+        self.entries[slot] = Some(entry);
+        Some(slot)
+    }
+
+    fn remove(&mut self, slot: usize) -> bool {
+        self.entries.get_mut(slot).and_then(Option::take).is_some()
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&Entry<u64, u8>) -> bool) -> usize {
+        let mut removed = 0;
+        for slot in &mut self.entries {
+            if slot.as_ref().is_some_and(|entry| !keep(entry)) {
+                *slot = None;
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Entry<u64, u8>> {
+        self.entries.iter().flatten()
+    }
+}
+
+#[test]
+fn a_foreign_backend_persists_and_restores_a_ledger() {
+    let mut ledger = Ledger::over(Pair {
+        entries: [None, None],
+    });
+    let done = acquired(&ledger.claim(1, at(0), at(10)));
+    assert!(ledger.complete_with(done, 7, at(1)).is_ok());
+    let pending = acquired(&ledger.claim(2, at(2), at(10)));
+    let (generation, observed) = (ledger.generation(), ledger.observed());
+    assert_eq!(generation, 2);
+    assert_eq!(observed, at(2));
+
+    // Round-trip every record through the accessors, as a database adapter would.
+    let saved = ledger.into_store();
+    let copied: [Option<Entry<u64, u8>>; 2] = [0, 1].map(|slot| {
+        saved.get(slot).map(|entry| {
+            assert_eq!(entry.is_pending(), entry.value().is_none());
+            Entry::new(
+                *entry.key(),
+                entry.fingerprint(),
+                entry.partition(),
+                entry.generation(),
+                entry.expires(),
+                entry.value().copied(),
+            )
+        })
+    });
+    assert_eq!(copied, saved.entries);
+
+    let mut restored = Ledger::restore(Pair { entries: copied }, generation, observed);
+    assert_eq!(restored.claim(1, at(3), at(10)), Claim::Completed(&7));
+    assert!(restored.complete(pending, at(3)));
+    assert!(!restored.abandon(pending));
+    assert_eq!(restored.claim(3, at(3), at(10)), Claim::Full);
+    assert!(!restored.abandon(done));
+}

@@ -58,3 +58,13 @@ assert_eq!(
 assert_eq!(ledger.expire_where(|key| key.starts_with("7/")), 1);
 # }
 ```
+
+## Bring Your Own Storage
+
+`Fixed` and `Hashed` keep records in memory. `Storage` is a public trait, so
+the same ledger can run over a database table or a shared-memory arena: a
+backend stores the `Entry` values the ledger hands it and finds them again by
+key or slot. `Entry::new` and its accessors round-trip every field, and
+`Ledger::restore` continues from a persisted generation and clock watermark so
+no stored claim handle can be reissued.
+

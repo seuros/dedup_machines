@@ -3,7 +3,7 @@ use core::hash::{BuildHasher, Hash};
 
 use hashbrown::{DefaultHashBuilder, HashTable};
 
-use crate::{Entry, Ledger, Storage, sealed};
+use crate::{Entry, Ledger, Storage};
 
 /// Heap-backed storage with a runtime capacity and hashed key lookup.
 #[derive(Debug)]
@@ -39,8 +39,6 @@ impl<K: Hash + Eq, V, H: BuildHasher> HashDedup<K, V, H> {
         })
     }
 }
-
-impl<K, V, H> sealed::Sealed for Hashed<K, V, H> {}
 
 impl<K: Hash + Eq, V, H: BuildHasher> Hashed<K, V, H> {
     fn key_at(&self, slot: usize) -> Option<&K> {
