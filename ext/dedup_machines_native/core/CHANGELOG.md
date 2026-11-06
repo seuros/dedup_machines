@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.3.0...dedup-machines-v0.4.0) (2026-11-06)
+
+
+### Features
+
+* unseal Storage so a ledger can run over an external backend ([61c8c77](https://github.com/seuros/dedup_machines/commit/61c8c77d45923109919a5dda5b1315ce64427aba))
+
 ## [0.3.0](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.2.2...dedup-machines-v0.3.0) (2026-11-06)
 
 
