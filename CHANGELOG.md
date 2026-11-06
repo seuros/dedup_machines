@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.1.2...dedup_machines/v0.1.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* name the gemspec block spec so the release workflow detects the extension ([a4584eb](https://github.com/seuros/dedup_machines/commit/a4584ebb0b40e77e8bdfb1e31ee72c7862cfa95e))
+
 ## [0.1.2](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.1.1...dedup_machines/v0.1.2) (2026-11-06)
 
 
