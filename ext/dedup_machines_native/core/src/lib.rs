@@ -106,17 +106,13 @@ impl<K, V> Entry<K, V> {
         expires: Duration,
         value: Option<V>,
     ) -> Self {
-        let state = match value {
-            Some(value) => State::Completed(value),
-            None => State::Pending,
-        };
         Self {
             key,
             fingerprint,
             partition,
             generation,
             expires,
-            state,
+            state: value.map_or(State::Pending, State::Completed),
         }
     }
 
