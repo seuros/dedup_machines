@@ -7,5 +7,7 @@ license.workspace = true
 description = "Bounded exact duplicate claims with generation-checked completion"
 readme = "README.md"
 exclude = ["src/**/tests.rs", "tests/"]
+keywords = ["deduplication", "idempotency", "ttl", "exactly-once", "no-std"]
+categories = ["no-std", "algorithms"]
 [lints]
 workspace = true
