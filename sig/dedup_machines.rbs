@@ -1,0 +1,12 @@
+module DedupMachines
+  VERSION: String
+  class Claim
+  end
+  class Ledger
+    def self.new: () -> Ledger
+    def capacity: () -> Integer
+    def claim: (Integer key, Integer now_ns, Integer ttl_ns) -> (Claim | :in_progress | :completed | :full | :rejected)
+    def complete: (Claim, Integer now_ns) -> bool
+    def abandon: (Claim) -> bool
+  end
+end
