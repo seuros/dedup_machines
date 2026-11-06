@@ -29,7 +29,7 @@ impl<K: Hash + Eq, V> HashDedup<K, V> {
 impl<K: Hash + Eq, V, H: BuildHasher> HashDedup<K, V, H> {
     /// Start an empty ledger with an explicit hasher.
     #[must_use]
-    pub fn with_capacity_and_hasher(capacity: usize, hasher: H) -> Self {
+    pub const fn with_capacity_and_hasher(capacity: usize, hasher: H) -> Self {
         Self::over(Hashed {
             slots: Vec::new(),
             free: Vec::new(),
