@@ -279,7 +279,10 @@ impl<S: Storage> Ledger<S> {
     }
 
     /// Complete a live pending claim, storing `value` for duplicate attempts.
-    /// Repeated or stale completions hand the value back.
+    ///
+    /// # Errors
+    ///
+    /// Repeated, stale, or expired completions hand `value` back.
     pub fn complete_with(
         &mut self,
         claim: ClaimId,
