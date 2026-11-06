@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.1.3...dedup_machines/v0.1.4) (2026-11-06)
+
+
+### Bug Fixes
+
+* keep test sources out of the packaged gem and crate ([dc18303](https://github.com/seuros/dedup_machines/commit/dc1830331de56e948e2ce082686be122a8a537aa))
+
 ## [0.1.3](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.1.2...dedup_machines/v0.1.3) (2026-11-06)
 
 
