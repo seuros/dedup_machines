@@ -1,5 +1,5 @@
 {
-  ".": "0.1.4",
-  "ext/dedup_machines_native/core": "0.2.1",
-  "ext/dedup_machines_native/ffi": "0.1.2"
+  ".": "0.1.5",
+  "ext/dedup_machines_native/core": "0.2.2",
+  "ext/dedup_machines_native/ffi": "0.1.3"
 }
