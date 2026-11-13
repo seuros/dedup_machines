@@ -44,6 +44,17 @@ jobs:
       - name: Test the core crate
         run: cargo test --workspace
 
+      # The hash-backed storage only exists under `alloc`; the workspace run
+      # above builds the default (allocation-free) core and never sees it.
+      - name: Lint and test every feature combination of the core
+        run: |
+          for features in alloc std; do
+            echo "::group::features: $features"
+            cargo clippy -p dedup-machines --no-default-features --features "$features" --all-targets -- -D warnings
+            cargo test -p dedup-machines --no-default-features --features "$features" --lib
+            echo "::endgroup::"
+          done
+
       - name: Run doc tests
         run: cargo test --workspace --doc
 
@@ -70,8 +81,12 @@ jobs:
       - name: Build and lint on bare metal
         working-directory: ${{ steps.crates.outputs.core }}
         run: |
-          cargo build --target thumbv7em-none-eabihf
-          cargo clippy --target thumbv7em-none-eabihf -- -D warnings
+          for features in "" alloc; do
+            echo "::group::thumbv7em features: ${features:-none}"
+            cargo build --no-default-features --features "$features" --target thumbv7em-none-eabihf
+            cargo clippy --no-default-features --features "$features" --target thumbv7em-none-eabihf -- -D warnings
+            echo "::endgroup::"
+          done
 
   ruby:
     runs-on: ubuntu-latest

@@ -1,12 +1,141 @@
 module DedupMachines
   VERSION: String
-  class Claim
+  CAPACITY: Integer
+
+  # Mirrors the core's `ClaimId`. `new(raw)` is `ClaimId::from_raw`.
+  class ClaimId < Data
+    # The Integer form: the ledger's scope in the top 16 bits above a
+    # sequence starting at 1.
+    attr_reader raw: Integer
+    def self.new: (Integer raw) -> ClaimId
+                | (raw: Integer) -> ClaimId
+    # The scope of the ledger that issued this id.
+    def scope: () -> Integer
   end
+
+  # The core's `Claim::Acquired(id)`.
+  class Acquired < Data
+    attr_reader id: ClaimId
+    def self.new: (ClaimId id) -> Acquired
+                | (id: ClaimId) -> Acquired
+  end
+
+  # The core's `Claim::Completed(value)`.
+  class Completed < Data
+    attr_reader value: Integer
+    def self.new: (Integer value) -> Completed
+                | (value: Integer) -> Completed
+  end
+
+  # The core's `Claim`: every honoured answer to a claim.
+  type claim = Acquired | :in_progress | Completed
+
+  # Mirrors the core's `Attempt`.
+  class Attempt < Data
+    attr_reader key: Integer
+    attr_reader fingerprint: Integer?
+    attr_reader partition: Integer?
+    def self.new: (Integer key, Integer? fingerprint, Integer? partition) -> Attempt
+                | (key: Integer, fingerprint: Integer?, partition: Integer?) -> Attempt
+  end
+
+  # Mirrors the core's `Entry`, in the order of `Entry::new`.
+  class Entry < Data
+    attr_reader key: Integer
+    attr_reader fingerprint: Integer?
+    attr_reader partition: Integer?
+    attr_reader claim: ClaimId
+    # First instant, in nanoseconds, at which the record no longer counts.
+    attr_reader expires: Integer
+    # nil while the claim is pending.
+    attr_reader value: Integer?
+    def self.new: (Integer key, Integer? fingerprint, Integer? partition, ClaimId claim, Integer expires,
+                   Integer? value) -> Entry
+                | (key: Integer, fingerprint: Integer?, partition: Integer?, claim: ClaimId, expires: Integer,
+                   value: Integer?) -> Entry
+    def pending?: () -> bool
+  end
+
   class Ledger
+    # Every refusal symbol, one per core `Refusal` variant, no catch-all. A
+    # refused call changed nothing. Each method below lists exactly the ones
+    # it can answer.
+    type refusal = :time_regression | :invalid_duration | :overflow | :exhausted | :conflict | :full
+                 | :partition_full | :stale | :concluded | :mismatch
+
+    # Keys, fingerprints, partitions and values are Integers in 0..2**64-1.
+    # Every instant (`now`, `observed`, `expires`) and every span (`ttl`) is
+    # Integer nanoseconds of the caller's monotonic clock. A non-Integer raises
+    # TypeError; negative or past 2**64-1 raises RangeError. A frozen ledger
+    # raises FrozenError on every mutating call.
+
+    # An empty ledger in scope zero.
     def self.new: () -> Ledger
+    # An empty ledger whose claim ids carry `scope`, an Integer in 0..65_535
+    # (TypeError for a non-Integer, RangeError outside the range). A claim id
+    # from a ledger of another scope is always :stale.
+    def self.with_scope: (Integer scope) -> Ledger
+    # The ledger of `scope` that held `entries`, continuing after `issued`
+    # claim ids from the clock value it `observed`: what a previous
+    # incarnation read from #entries, #scope, #issued and #observed. `issued`
+    # is an Integer in 0..2**48-1 and `entries` holds at most 64 Entry values
+    # (RangeError otherwise). Raises RangeError too where the core answers
+    # None: an entry whose claim id carries another scope or a sequence
+    # outside 1..issued, or two entries under one key or one claim id (the
+    # same entry twice included). It never answers nil. The partition cap is not part of the saved state: set
+    # it again.
+    def self.resumed: (Array[Entry] entries, Integer scope, Integer issued, Integer observed) -> Ledger
+    # Private: what ClaimId#scope reads.
+    def self.__scope_of: (Integer raw) -> Integer
+    # A copy of this ledger that caps live records per partition; this ledger
+    # is unchanged (the core's builder consumes it).
+    def with_partition_cap: (Integer cap) -> Ledger
+    def scope: () -> Integer
+    # How many claim ids this ledger has issued; also the sequence number of
+    # the latest one.
+    def issued: () -> Integer
+    # Latest clock value recorded by an honoured call, in nanoseconds.
+    def observed: () -> Integer
+    def partition_cap: () -> Integer?
     def capacity: () -> Integer
-    def claim: (Integer key, Integer now_ns, Integer ttl_ns) -> (Claim | :in_progress | :completed | :full | :rejected)
-    def complete: (Claim, Integer now_ns) -> bool
-    def abandon: (Claim) -> bool
+    # Every record held, frozen. It may include records whose ttl has elapsed:
+    # every call reads those as absent and the next Acquired removes them.
+    def entries: () -> Array[Entry]
+
+    # Honoured: an Acquired (the key is yours; expired records were removed),
+    # :in_progress or a Completed (only the observed clock moved).
+    def claim: (Integer key, Integer now, Integer ttl)
+               -> (claim | :time_regression | :invalid_duration | :overflow | :conflict | :exhausted | :full)
+    # As #claim, under a payload fingerprint. :conflict when the key is live
+    # under another fingerprint, or under none.
+    def claim_with: (Integer key, Integer fingerprint, Integer now, Integer ttl)
+                    -> (claim | :time_regression | :invalid_duration | :overflow | :conflict | :exhausted | :full)
+    # As #claim, for an Attempt. :partition_full when the attempt's partition
+    # holds its quota of live records.
+    def admit: (Attempt attempt, Integer now, Integer ttl)
+               -> (claim | :time_regression | :invalid_duration | :overflow | :conflict | :partition_full
+                   | :exhausted | :full)
+
+    # #complete_with the value 0. Honoured: :completed, or :already_completed
+    # when this claim is already completed with the value 0 (a repeat that
+    # changes nothing).
+    def complete: (ClaimId claim, Integer now)
+                  -> (:completed | :already_completed | :stale | :time_regression | :mismatch)
+    # Honoured: :completed, or :already_completed when this claim is already
+    # completed with this same value (a repeat that changes nothing). :stale
+    # for an id this ledger never issued comes first; then :time_regression;
+    # then :stale for a claim not live at `now` (an answer about `now`: it
+    # records nothing, so an earlier `now` may be honoured); then :mismatch
+    # for a completed claim whose recorded value differs. The core hands the value
+    # back with the refusal; here the caller still holds it.
+    def complete_with: (ClaimId claim, Integer value, Integer now)
+                       -> (:completed | :already_completed | :stale | :time_regression | :mismatch)
+    # Honoured: :abandoned. A repeat is :stale: no history is kept.
+    # :concluded for a completed claim.
+    def abandon: (ClaimId claim) -> (:abandoned | :stale | :concluded)
+    # A drain: drops every live record whose key the block marks dead and
+    # returns how many. Never refuses. The block sees each live key once,
+    # before anything is dropped.
+    def expire_where: () { (Integer key) -> boolish } -> Integer
   end
 end

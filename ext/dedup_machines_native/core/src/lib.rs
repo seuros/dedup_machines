@@ -4,249 +4,33 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+mod claim;
 #[cfg(feature = "alloc")]
 mod hashed;
+mod refusal;
+mod storage;
 
 use core::time::Duration;
 
+use periscope_machines::Issuer;
+
+use claim::State;
+pub use claim::{Attempt, Claim, ClaimId, Completion, Entry};
 #[cfg(feature = "alloc")]
 pub use hashed::{HashDedup, Hashed};
-
-/// Opaque generation-checked claim, scoped to one ledger lifetime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClaimId {
-    slot: usize,
-    generation: u64,
-}
-
-/// Claim outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Claim<'a, V> {
-    /// Caller owns a new pending claim.
-    Acquired(ClaimId),
-    /// Another live attempt owns this key.
-    InProgress,
-    /// This key completed within its retention interval.
-    Completed(&'a V),
-    /// A live or completed record for this key carries a different fingerprint.
-    Conflict,
-    /// All slots contain unexpired records.
-    Full,
-    /// The attempt's partition holds its quota of unexpired records.
-    PartitionFull,
-    /// Invalid clock/TTL or exhausted generation space.
-    Rejected,
-}
-
-/// A key plus the optional fingerprint and partition it is claimed under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Attempt<K> {
-    key: K,
-    fingerprint: Option<u64>,
-    partition: Option<u64>,
-}
-
-impl<K> Attempt<K> {
-    /// Plain attempt: no fingerprint, no partition.
-    #[must_use]
-    pub const fn new(key: K) -> Self {
-        Self {
-            key,
-            fingerprint: None,
-            partition: None,
-        }
-    }
-
-    /// Payload identity; a record under the same key with another fingerprint conflicts.
-    #[must_use]
-    pub const fn fingerprint(mut self, fingerprint: u64) -> Self {
-        self.fingerprint = Some(fingerprint);
-        self
-    }
-
-    /// Quota bucket counted against the ledger's partition cap.
-    #[must_use]
-    pub const fn partition(mut self, partition: u64) -> Self {
-        self.partition = Some(partition);
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum State<V> {
-    Pending,
-    Completed(V),
-}
-
-/// One record in a [`Storage`] backend: a claimed key, its generation and
-/// expiry, and whether the claim is still pending or carries a completed value.
-///
-/// A [`Ledger`] builds entries and hands them to its storage; a backend that
-/// persists them elsewhere reads them back through the accessors and rebuilds
-/// them with [`Entry::new`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry<K, V> {
-    key: K,
-    fingerprint: Option<u64>,
-    partition: Option<u64>,
-    generation: u64,
-    expires: Duration,
-    state: State<V>,
-}
-
-impl<K, V> Entry<K, V> {
-    /// Rebuild a stored record; `value` is `None` while the claim is pending.
-    #[must_use]
-    pub fn new(
-        key: K,
-        fingerprint: Option<u64>,
-        partition: Option<u64>,
-        generation: u64,
-        expires: Duration,
-        value: Option<V>,
-    ) -> Self {
-        Self {
-            key,
-            fingerprint,
-            partition,
-            generation,
-            expires,
-            state: value.map_or(State::Pending, State::Completed),
-        }
-    }
-
-    /// The claimed key.
-    #[must_use]
-    pub const fn key(&self) -> &K {
-        &self.key
-    }
-
-    /// Payload fingerprint the key was claimed under, if any.
-    #[must_use]
-    pub const fn fingerprint(&self) -> Option<u64> {
-        self.fingerprint
-    }
-
-    /// Partition the record is counted against, if any.
-    #[must_use]
-    pub const fn partition(&self) -> Option<u64> {
-        self.partition
-    }
-
-    /// Generation the claim was issued with; stale [`ClaimId`]s carry an older one.
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Instant after which the record is dropped on the next observation.
-    #[must_use]
-    pub const fn expires(&self) -> Duration {
-        self.expires
-    }
-
-    /// `true` while the claim is live and uncompleted.
-    #[must_use]
-    pub const fn is_pending(&self) -> bool {
-        matches!(self.state, State::Pending)
-    }
-
-    /// The completed value, once there is one.
-    #[must_use]
-    pub const fn value(&self) -> Option<&V> {
-        match &self.state {
-            State::Completed(value) => Some(value),
-            State::Pending => None,
-        }
-    }
-}
-
-/// Where a [`Ledger`] keeps its records.
-///
-/// [`Fixed`] and [`Hashed`] are in-memory. Implement this to put the ledger
-/// over something else, such as a database table or a shared-memory arena;
-/// the ledger only ever addresses records by the slot `insert` returned.
-///
-/// Slots are opaque: a backend may reuse one after `remove`, because the
-/// ledger's generation check tells a stale [`ClaimId`] from a fresh record.
-pub trait Storage {
-    /// Claimed key type.
-    type Key: Eq;
-    /// Value stored on completion.
-    type Value;
-
-    /// The record at `slot`, if one is live.
-    fn get(&self, slot: usize) -> Option<&Entry<Self::Key, Self::Value>>;
-    /// Mutable access to the record at `slot`, if one is live.
-    fn get_mut(&mut self, slot: usize) -> Option<&mut Entry<Self::Key, Self::Value>>;
-    /// The slot holding `key`, if any.
-    fn find(&self, key: &Self::Key) -> Option<usize>;
-    /// Store `entry` in a free slot, or `None` when the backend is full.
-    fn insert(&mut self, entry: Entry<Self::Key, Self::Value>) -> Option<usize>;
-    /// Drop the record at `slot`; `false` when there was none.
-    fn remove(&mut self, slot: usize) -> bool;
-    /// Drop every record `keep` rejects, returning how many were dropped.
-    fn retain(&mut self, keep: impl FnMut(&Entry<Self::Key, Self::Value>) -> bool) -> usize;
-    /// Every live record, in no particular order.
-    fn iter(&self) -> impl Iterator<Item = &Entry<Self::Key, Self::Value>>;
-}
-
-/// Fixed-capacity inline storage.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Fixed<K, V, const N: usize> {
-    entries: [Option<Entry<K, V>>; N],
-}
-
-impl<K: Eq, V, const N: usize> Storage for Fixed<K, V, N> {
-    type Key = K;
-    type Value = V;
-
-    fn get(&self, slot: usize) -> Option<&Entry<K, V>> {
-        self.entries.get(slot)?.as_ref()
-    }
-
-    fn get_mut(&mut self, slot: usize) -> Option<&mut Entry<K, V>> {
-        self.entries.get_mut(slot)?.as_mut()
-    }
-
-    fn find(&self, key: &K) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.key == *key))
-    }
-
-    fn insert(&mut self, entry: Entry<K, V>) -> Option<usize> {
-        let slot = self.entries.iter().position(Option::is_none)?;
-        self.entries[slot] = Some(entry);
-        Some(slot)
-    }
-
-    fn remove(&mut self, slot: usize) -> bool {
-        self.entries.get_mut(slot).and_then(Option::take).is_some()
-    }
-
-    fn retain(&mut self, mut keep: impl FnMut(&Entry<K, V>) -> bool) -> usize {
-        let mut removed = 0;
-        for slot in &mut self.entries {
-            if slot.as_ref().is_some_and(|entry| !keep(entry)) {
-                *slot = None;
-                removed += 1;
-            }
-        }
-        removed
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &Entry<K, V>> {
-        self.entries.iter().flatten()
-    }
-}
+pub use refusal::{Refusal, Refused};
+pub use storage::{Fixed, Storage};
 
 /// Exact-key claim ledger over a storage backend.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// Equality compares the whole value: records, issued ids, observed clock and
+/// partition cap. A refused call leaves the ledger equal to a clone taken
+/// before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ledger<S> {
     store: S,
-    generation: u64,
+    /// Issues the claim ids; it also holds the ledger's scope.
+    claims: Issuer,
     observed: Duration,
     partition_cap: Option<usize>,
 }
@@ -261,209 +45,394 @@ impl<K: Eq, V, const N: usize> Default for Dedup<K, N, V> {
 }
 
 impl<K: Eq, V, const N: usize> Dedup<K, N, V> {
-    /// Start an empty ledger with a fresh handle namespace.
+    /// Empty ledger in scope zero.
     #[must_use]
     pub const fn new() -> Self {
-        Self::over(Fixed {
-            entries: [const { None }; N],
-        })
+        Self::with_scope(0)
+    }
+
+    /// Empty ledger whose claim ids carry `scope`.
+    ///
+    /// A claim id is a plain integer, so two ledgers in the same scope issue
+    /// the same ones. Give every ledger whose claim ids could meet its own
+    /// scope: an id of another scope is then always [`Refusal::Stale`]. The
+    /// ledger cannot pick a scope itself; keeping them distinct is the
+    /// caller's job.
+    #[must_use]
+    pub const fn with_scope(scope: u16) -> Self {
+        Self::fresh(Fixed::new(), Issuer::new(scope), Duration::ZERO)
     }
 }
 
-impl<S: Storage> Ledger<S> {
-    /// Start an empty ledger over `store` with a fresh handle namespace.
-    ///
-    /// The store is expected to be empty: records it already holds would
-    /// outrank every [`ClaimId`] this ledger issues. Use [`Ledger::restore`]
-    /// to continue a persisted one.
-    #[must_use]
-    pub const fn over(store: S) -> Self {
-        Self::restore(store, 0, Duration::ZERO)
-    }
-
-    /// Continue a ledger whose records live in `store`, from the highest
-    /// `generation` it ever issued and the last clock value it `observed`.
-    ///
-    /// Both must come from the same committed state as the records, so no
-    /// stored [`ClaimId`] can be reissued.
-    #[must_use]
-    pub const fn restore(store: S, generation: u64, observed: Duration) -> Self {
+impl<S> Ledger<S> {
+    pub(crate) const fn fresh(store: S, claims: Issuer, observed: Duration) -> Self {
         Self {
             store,
-            generation,
+            claims,
             observed,
             partition_cap: None,
         }
     }
+}
 
-    /// Highest generation issued so far; persist it with the records.
+impl<S: Storage> Ledger<S> {
+    /// Empty ledger in scope zero over `store`.
+    ///
+    /// `None` when `store` already holds a record: a ledger that has issued
+    /// nothing owns none of them. Continue a persisted ledger with
+    /// [`Ledger::resumed`].
     #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
+    pub fn over(store: S) -> Option<Self> {
+        Self::over_with_scope(store, 0)
     }
 
-    /// Latest clock value accepted; persist it with the records.
+    /// Empty ledger over `store` whose claim ids carry `scope`, see
+    /// [`Dedup::with_scope`]. `None` when `store` already holds a record.
+    #[must_use]
+    pub fn over_with_scope(store: S, scope: u16) -> Option<Self> {
+        Self::resumed(store, scope, 0, Duration::ZERO)
+    }
+
+    /// Continue the ledger of `scope` whose records live in `store`, after
+    /// `issued` claim ids ([`Ledger::issued`]) and from the last clock value
+    /// it `observed` ([`Ledger::observed`]).
+    ///
+    /// The next claim carries sequence `issued + 1`, so a claim id that
+    /// outlived the restart is never issued again. All three must come from
+    /// the same committed state as the records: resuming from a lower count
+    /// reissues ids. A ledger that cannot save its count takes a scope no
+    /// earlier incarnation used instead.
+    ///
+    /// `None`, refusing the saved state, when `issued` is beyond
+    /// `SEQUENCE_MAX` (2^48 - 1); when a record's claim id is not one this
+    /// scope issued within `issued` (another scope, sequence zero, or beyond
+    /// the count); or when two slots carry the same key or the same claim
+    /// id, two identical records included. Each record must be the one its
+    /// key and its claim id lead to: `find` and `locate` answer its slot.
+    ///
+    /// The partition cap is configuration, not saved state: set it again with
+    /// [`Ledger::with_partition_cap`].
+    #[must_use]
+    pub fn resumed(store: S, scope: u16, issued: u64, observed: Duration) -> Option<Self> {
+        let claims = Issuer::resumed(scope, issued)?;
+        // A lookup answers one slot, so two slots under one key, or under
+        // one claim id, cannot both be the slot their lookup answers.
+        let sound = store.iter().all(|(slot, entry)| {
+            claims.owns(entry.claim.raw())
+                && store.find(&entry.key) == Some(slot)
+                && store.locate(entry.claim) == Some(slot)
+        });
+        sound.then(|| Self::fresh(store, claims, observed))
+    }
+
+    /// The scope carried by every claim id this ledger issues.
+    #[must_use]
+    pub const fn scope(&self) -> u16 {
+        self.claims.scope()
+    }
+
+    /// How many claim ids this ledger has issued; also the sequence number of
+    /// the latest one. Persist it with the records.
+    #[must_use]
+    pub const fn issued(&self) -> u64 {
+        self.claims.issued()
+    }
+
+    /// Latest clock value recorded by an honoured call; persist it with the
+    /// records.
     #[must_use]
     pub const fn observed(&self) -> Duration {
         self.observed
     }
 
+    /// The partition cap, if one is set.
+    #[must_use]
+    pub const fn partition_cap(&self) -> Option<usize> {
+        self.partition_cap
+    }
+
     /// The storage backend, for a persisting adapter to read through.
+    ///
+    /// It may still hold records whose TTL has elapsed: every call reads
+    /// those as absent, and the next acquiring claim removes them.
     #[must_use]
     pub const fn store(&self) -> &S {
         &self.store
     }
 
-    /// Give the storage back, to persist or hand to [`Ledger::restore`].
+    /// Give the storage back, to persist or hand to [`Ledger::resumed`].
     #[must_use]
     pub fn into_store(self) -> S {
         self.store
     }
 
-    /// Cap unexpired records per partition; attempts without a partition are uncounted.
+    /// Cap live records per partition; attempts without a partition are uncounted.
     #[must_use]
     pub const fn with_partition_cap(mut self, cap: usize) -> Self {
         self.partition_cap = Some(cap);
         self
     }
 
-    /// Claim a key without evicting any unexpired entry.
-    #[must_use]
-    pub fn claim(&mut self, key: S::Key, now: Duration, ttl: Duration) -> Claim<'_, S::Value> {
+    /// Claim a key without evicting any live record. See [`Ledger::admit`].
+    ///
+    /// # Errors
+    /// As [`Ledger::admit`], without [`Refusal::PartitionFull`].
+    pub fn claim(
+        &mut self,
+        key: S::Key,
+        now: Duration,
+        ttl: Duration,
+    ) -> Result<Claim<'_, S::Value>, Refusal> {
         self.admit(Attempt::new(key), now, ttl)
     }
 
-    /// Claim a key under a payload fingerprint; a mismatching record conflicts.
-    #[must_use]
+    /// Claim a key under a payload fingerprint. See [`Ledger::admit`].
+    ///
+    /// # Errors
+    /// As [`Ledger::admit`], without [`Refusal::PartitionFull`].
     pub fn claim_with(
         &mut self,
         key: S::Key,
         fingerprint: u64,
         now: Duration,
         ttl: Duration,
-    ) -> Claim<'_, S::Value> {
+    ) -> Result<Claim<'_, S::Value>, Refusal> {
         self.admit(Attempt::new(key).fingerprint(fingerprint), now, ttl)
     }
 
-    /// Claim an attempt without evicting any unexpired entry.
-    #[must_use]
+    /// Ask whether the attempt may run, without evicting any live record.
+    ///
+    /// A record counts until `now` reaches its expiry and is read as absent
+    /// from then on. Every honoured answer records `now` as observed.
+    /// [`Claim::InProgress`] and [`Claim::Completed`] change nothing else.
+    /// [`Claim::Acquired`] also removes every record that expired by `now`,
+    /// stores the new pending record and issues its id.
+    ///
+    /// # Errors
+    /// In this order: [`Refusal::TimeRegression`], [`Refusal::InvalidDuration`]
+    /// for a zero TTL, [`Refusal::Overflow`] when `now + ttl` does not fit,
+    /// [`Refusal::Conflict`] when the key is live under another fingerprint,
+    /// [`Refusal::PartitionFull`], [`Refusal::Exhausted`] when the scope's
+    /// claim ids are spent, [`Refusal::Full`]. A refusal changes nothing, and
+    /// in particular removes no expired record.
     pub fn admit(
         &mut self,
         attempt: Attempt<S::Key>,
         now: Duration,
         ttl: Duration,
-    ) -> Claim<'_, S::Value> {
-        if !self.observe(now) || ttl.is_zero() {
-            return Claim::Rejected;
+    ) -> Result<Claim<'_, S::Value>, Refusal> {
+        self.check_time(now)?;
+        if ttl.is_zero() {
+            return Err(Refusal::InvalidDuration);
         }
-        let Some(expires) = now.checked_add(ttl) else {
-            return Claim::Rejected;
-        };
-        self.store.retain(|entry| now < entry.expires);
-        let found = self.store.find(&attempt.key);
-        if let Some(slot) = found {
-            return self.revisit(slot, attempt.fingerprint);
+        let expires = now.checked_add(ttl).ok_or(Refusal::Overflow)?;
+        let held = self.store.find(&attempt.key).filter(|&slot| {
+            let entry = self.store.get(slot);
+            entry.is_some_and(|entry| entry.live(now))
+        });
+        if let Some(slot) = held {
+            return self.revisit(slot, attempt.fingerprint, now);
         }
-        if let (Some(cap), Some(partition)) = (self.partition_cap, attempt.partition)
-            && self
-                .store
-                .iter()
-                .filter(|entry| entry.partition == Some(partition))
-                .count()
-                >= cap
-        {
-            return Claim::PartitionFull;
+        if let (Some(cap), Some(partition)) = (self.partition_cap, attempt.partition) {
+            let counted = |(_, entry): &(usize, &Entry<_, _>)| {
+                entry.live(now) && entry.partition == Some(partition)
+            };
+            if self.store.iter().filter(counted).count() >= cap {
+                return Err(Refusal::PartitionFull);
+            }
         }
-        let Some(generation) = self.generation.checked_add(1) else {
-            return Claim::Rejected;
+        // Issue on a copy: the id is consumed only once the record is stored.
+        let mut claims = self.claims;
+        let claim = match claims.issue() {
+            Ok(raw) => ClaimId::from_raw(raw),
+            Err(periscope_machines::Refusal::Exhausted) => return Err(Refusal::Exhausted),
         };
-        let Some(slot) = self.store.insert(Entry {
-            key: attempt.key,
-            fingerprint: attempt.fingerprint,
-            partition: attempt.partition,
-            generation,
-            expires,
-            state: State::Pending,
-        }) else {
-            return Claim::Full;
-        };
-        self.generation = generation;
-        Claim::Acquired(ClaimId { slot, generation })
+        // Removing the expired is an effect of an honoured claim only. With
+        // none to remove, a full backend refuses the insert and stores nothing;
+        // with one removed, the insert has room (the `Storage` contract).
+        if self.store.iter().any(|(_, entry)| !entry.live(now)) {
+            self.store.retain(|entry| entry.live(now));
+        }
+        self.store
+            .insert(Entry {
+                key: attempt.key,
+                fingerprint: attempt.fingerprint,
+                partition: attempt.partition,
+                claim,
+                expires,
+                state: State::Pending,
+            })
+            .ok_or(Refusal::Full)?;
+        self.claims = claims;
+        self.observed = now;
+        Ok(Claim::Acquired(claim))
     }
 
-    /// Complete a live pending claim. Repeated or stale completions return `false`.
-    #[must_use]
-    pub fn complete(&mut self, claim: ClaimId, now: Duration) -> bool
+    /// Complete a live pending claim with `S::Value::default()`. See
+    /// [`Ledger::complete_with`].
+    ///
+    /// # Errors
+    /// As [`Ledger::complete_with`]; there is no value to hand back.
+    pub fn complete(&mut self, claim: ClaimId, now: Duration) -> Result<Completion, Refusal>
     where
-        S::Value: Default,
+        S::Value: Default + PartialEq,
     {
-        self.complete_with(claim, S::Value::default(), now).is_ok()
+        self.complete_with(claim, S::Value::default(), now)
+            .map_err(|refused| refused.refusal)
     }
 
     /// Complete a live pending claim, storing `value` for duplicate attempts.
     ///
-    /// # Errors
+    /// [`Completion::Completed`] records the value and `now` as observed; the
+    /// record keeps its original expiry. Completing the same live claim again
+    /// with an equal value is the idempotent repeat
+    /// [`Completion::AlreadyCompleted`]: the value is dropped, being equal to
+    /// the one recorded, and nothing changes.
     ///
-    /// Repeated, stale, or expired completions hand `value` back.
+    /// # Errors
+    /// A [`Refused`] carrying `value` back with the reason, in this order:
+    /// [`Refusal::Stale`] for an id this ledger never issued (another scope,
+    /// or a sequence it has not reached), [`Refusal::TimeRegression`],
+    /// [`Refusal::Stale`] for a claim that is not live at `now` (expired by
+    /// then, abandoned, dropped), [`Refusal::Mismatch`] for a completed
+    /// claim whose recorded value is not `value`.
+    ///
+    /// `Stale` for an expired claim is an answer about `now`, not a recorded
+    /// fact: like every refusal it leaves the observed clock alone, so the
+    /// same completion at an earlier instant, not behind the latest honoured
+    /// call, is honoured. An honoured `Acquired` of the key is what ends the
+    /// old id for good.
     pub fn complete_with(
         &mut self,
         claim: ClaimId,
         value: S::Value,
         now: Duration,
-    ) -> Result<(), S::Value> {
-        if !self.observe(now) {
-            return Err(value);
-        }
-        let Some(entry) = self.store.get_mut(claim.slot) else {
-            return Err(value);
+    ) -> Result<Completion, Refused<S::Value>>
+    where
+        S::Value: PartialEq,
+    {
+        let slot = match self.completable(claim, &value, now) {
+            Ok(Some(slot)) => slot,
+            Ok(None) => return Ok(Completion::AlreadyCompleted),
+            Err(refusal) => return Err(Refused { refusal, value }),
         };
-        if entry.generation != claim.generation
-            || !matches!(entry.state, State::Pending)
-            || now >= entry.expires
-        {
-            return Err(value);
-        }
+        let Some(entry) = self.store.get_mut(slot) else {
+            let refusal = Refusal::Stale;
+            return Err(Refused { refusal, value });
+        };
         entry.state = State::Completed(value);
-        Ok(())
+        self.observed = now;
+        Ok(Completion::Completed)
     }
 
-    /// Free a matching pending claim after a known failure, not an uncertain effect.
-    #[must_use]
-    pub fn abandon(&mut self, claim: ClaimId) -> bool {
-        let pending = self.store.get(claim.slot).is_some_and(|entry| {
-            entry.generation == claim.generation && matches!(entry.state, State::Pending)
-        });
-        pending && self.store.remove(claim.slot)
+    /// Free a live pending claim after a known failure, not an uncertain
+    /// effect. The key is claimable again at once.
+    ///
+    /// The call carries no clock: a claim is live here until the *observed*
+    /// clock reaches its expiry. A repeat is not honoured: the slot is freed
+    /// and no history is kept, so the ledger cannot tell an abandoned claim
+    /// from an expired or dropped one.
+    ///
+    /// # Errors
+    /// [`Refusal::Stale`] for an id this ledger never issued or one that is
+    /// no longer live; [`Refusal::Concluded`] for a completed claim.
+    pub fn abandon(&mut self, claim: ClaimId) -> Result<(), Refusal> {
+        if !self.claims.owns(claim.raw()) {
+            return Err(Refusal::Stale);
+        }
+        let slot = self
+            .live_claim(claim, self.observed)
+            .ok_or(Refusal::Stale)?;
+        let pending = self.store.get(slot).is_some_and(Entry::is_pending);
+        if !pending {
+            return Err(Refusal::Concluded);
+        }
+        if self.store.remove(slot) {
+            Ok(())
+        } else {
+            Err(Refusal::Stale)
+        }
     }
 
-    /// Drop every record, pending or completed, whose key `dead` marks as ownerless.
-    /// Returns how many were dropped.
+    /// Drain: drop every live record, pending or completed, whose key `dead`
+    /// marks as ownerless, and return how many were dropped.
+    ///
+    /// Records that expired by the observed clock are removed along the way,
+    /// uncounted and without being shown to `dead`: they were already absent.
     pub fn expire_where(&mut self, mut dead: impl FnMut(&S::Key) -> bool) -> usize {
-        self.store.retain(|entry| !dead(&entry.key))
+        let observed = self.observed;
+        let mut dropped = 0;
+        self.store.retain(|entry| {
+            if !entry.live(observed) {
+                return false;
+            }
+            let drop = dead(&entry.key);
+            dropped += usize::from(drop);
+            !drop
+        });
+        dropped
     }
 
-    fn revisit(&self, slot: usize, fingerprint: Option<u64>) -> Claim<'_, S::Value> {
-        let Some(entry) = self.store.get(slot) else {
-            return Claim::Rejected;
-        };
-        if entry.fingerprint != fingerprint {
-            return Claim::Conflict;
+    /// The slot of a pending claim to complete, `None` for a provable repeat.
+    fn completable(
+        &self,
+        claim: ClaimId,
+        value: &S::Value,
+        now: Duration,
+    ) -> Result<Option<usize>, Refusal>
+    where
+        S::Value: PartialEq,
+    {
+        if !self.claims.owns(claim.raw()) {
+            return Err(Refusal::Stale);
         }
-        match &entry.state {
-            State::Pending => Claim::InProgress,
-            State::Completed(value) => Claim::Completed(value),
+        self.check_time(now)?;
+        let slot = self.live_claim(claim, now).ok_or(Refusal::Stale)?;
+        match self.store.get(slot).map(|entry| &entry.state) {
+            Some(State::Pending) => Ok(Some(slot)),
+            Some(State::Completed(recorded)) if recorded == value => Ok(None),
+            Some(State::Completed(_)) => Err(Refusal::Mismatch),
+            None => Err(Refusal::Stale),
         }
     }
 
-    fn observe(&mut self, now: Duration) -> bool {
-        if now < self.observed {
-            return false;
+    /// The slot of the record claimed under `claim`, if it is live at `now`.
+    fn live_claim(&self, claim: ClaimId, now: Duration) -> Option<usize> {
+        self.store.locate(claim).filter(|&slot| {
+            let entry = self.store.get(slot);
+            entry.is_some_and(|entry| entry.claim == claim && entry.live(now))
+        })
+    }
+
+    fn revisit(
+        &mut self,
+        slot: usize,
+        fingerprint: Option<u64>,
+        now: Duration,
+    ) -> Result<Claim<'_, S::Value>, Refusal> {
+        let entry = self.store.get(slot);
+        if entry.is_none_or(|entry| entry.fingerprint != fingerprint) {
+            return Err(Refusal::Conflict);
         }
         self.observed = now;
-        true
+        match self.store.get(slot).map(|entry| &entry.state) {
+            Some(State::Completed(value)) => Ok(Claim::Completed(value)),
+            // `None` cannot happen: the slot was read a line above.
+            Some(State::Pending) | None => Ok(Claim::InProgress),
+        }
+    }
+
+    fn check_time(&self, now: Duration) -> Result<(), Refusal> {
+        if now < self.observed {
+            Err(Refusal::TimeRegression)
+        } else {
+            Ok(())
+        }
     }
 }
 
+#[cfg(test)]
+extern crate std;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
