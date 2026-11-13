@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.2.2...dedup_machines/v0.3.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* converted to the fleet conventions. One exhaustive Refusal per crate, Result from every operation that can refuse, a refusal changes nothing, provable idempotent repeats are honoured, Ruby mirrors the core. No compatibility aliases. Claim holds honoured answers only; ClaimId is a scoped u64; restore is resumed(store, scope, issued, observed); Storage gains locate and iter yields slots. CI now tests the alloc and std features.
+
+### Features
+
+* one Refusal, scoped never-reissued claim ids, lazy expiry and refusals that change nothing ([9e41b46](https://github.com/seuros/dedup_machines/commit/9e41b46ec7ab5264ce4ed7db72ce98a3d6f4785b))
+
 ## [0.2.2](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.2.1...dedup_machines/v0.2.2) (2026-11-06)
 
 
