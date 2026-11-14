@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.6.0...dedup_machines/v0.6.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** require matryona-machines &gt;= 0.4 and build the row message only on refusal ([d705ac2](https://github.com/seuros/dedup_machines/commit/d705ac2588446e3fe72988a983020427d79d6dd8))
+
 ## [0.6.0](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.5.0...dedup_machines/v0.6.0) (2026-11-14)
 
 
