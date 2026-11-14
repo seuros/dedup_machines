@@ -2,7 +2,22 @@ module DedupMachines
   VERSION: String
   CAPACITY: Integer
 
-  # Mirrors the core's `ClaimId`. `new(raw)` is `ClaimId::from_raw`.
+  # Every Data value below validates at construction through the core, a
+  # hand-built one like a returned one: TypeError for the wrong type,
+  # RangeError for a value the core rejects. Integers are in 0..2**64-1.
+  # They are final: subclassing one raises TypeError, and `allocate` is
+  # undefined.
+
+  # Private hooks the Data values validate through.
+  def self.__claim_scope: (Integer raw) -> Integer
+  def self.__acquired: (ClaimId id) -> nil
+  def self.__completed: (Integer value) -> nil
+  def self.__attempt: ([Integer, Integer?, Integer?] fields) -> nil
+  def self.__entry: ([Integer, Integer?, Integer?, ClaimId, Integer, Integer?] fields) -> nil
+
+  # Mirrors the core's `ClaimId`. `new(raw)` is `ClaimId::from_raw`:
+  # RangeError for a sequence (the low 48 bits) of zero, which no ledger
+  # issues.
   class ClaimId < Data
     # The Integer form: the ledger's scope in the top 16 bits above a
     # sequence starting at 1.
@@ -13,7 +28,7 @@ module DedupMachines
     def scope: () -> Integer
   end
 
-  # The core's `Claim::Acquired(id)`.
+  # The core's `Claim::Acquired(id)`. TypeError unless `id` is a ClaimId.
   class Acquired < Data
     attr_reader id: ClaimId
     def self.new: (ClaimId id) -> Acquired
@@ -85,10 +100,9 @@ module DedupMachines
     # same entry twice included). It never answers nil. The partition cap is not part of the saved state: set
     # it again.
     def self.resumed: (Array[Entry] entries, Integer scope, Integer issued, Integer observed) -> Ledger
-    # Private: what ClaimId#scope reads.
-    def self.__scope_of: (Integer raw) -> Integer
     # A copy of this ledger that caps live records per partition; this ledger
-    # is unchanged (the core's builder consumes it).
+    # is unchanged (the core's builder consumes it). RangeError for a cap past
+    # the platform's usize.
     def with_partition_cap: (Integer cap) -> Ledger
     def scope: () -> Integer
     # How many claim ids this ledger has issued; also the sequence number of
@@ -103,7 +117,8 @@ module DedupMachines
     def entries: () -> Array[Entry]
 
     # Honoured: an Acquired (the key is yours; expired records were removed),
-    # :in_progress or a Completed (only the observed clock moved).
+    # :in_progress or a Completed (only the observed clock moved). Every
+    # honoured answer records `now`: each depends on what has expired by then.
     def claim: (Integer key, Integer now, Integer ttl)
                -> (claim | :time_regression | :invalid_duration | :overflow | :conflict | :exhausted | :full)
     # As #claim, under a payload fingerprint. :conflict when the key is live
@@ -121,8 +136,9 @@ module DedupMachines
     # changes nothing).
     def complete: (ClaimId claim, Integer now)
                   -> (:completed | :already_completed | :stale | :time_regression | :mismatch)
-    # Honoured: :completed, or :already_completed when this claim is already
-    # completed with this same value (a repeat that changes nothing). :stale
+    # Honoured: :completed (records `now`), or :already_completed when this
+    # claim is already completed with this same value (a repeat that changes
+    # nothing, the observed clock included). :stale
     # for an id this ledger never issued comes first; then :time_regression;
     # then :stale for a claim not live at `now` (an answer about `now`: it
     # records nothing, so an earlier `now` may be honoured); then :mismatch
@@ -130,12 +146,15 @@ module DedupMachines
     # back with the refusal; here the caller still holds it.
     def complete_with: (ClaimId claim, Integer value, Integer now)
                        -> (:completed | :already_completed | :stale | :time_regression | :mismatch)
-    # Honoured: :abandoned. A repeat is :stale: no history is kept.
+    # Honoured: :abandoned. A repeat is :stale: no history is kept. Takes no
+    # clock: liveness is judged at the observed clock, which it leaves alone.
     # :concluded for a completed claim.
     def abandon: (ClaimId claim) -> (:abandoned | :stale | :concluded)
     # A drain: drops every live record whose key the block marks dead and
-    # returns how many. Never refuses. The block sees each live key once,
-    # before anything is dropped.
+    # returns how many. Never refuses. Liveness is judged at the observed
+    # clock; it records nothing. The block sees each live key once, before
+    # anything is dropped, so a block that raises drops nothing; a record the
+    # block was not shown (one it claimed itself) is never dropped.
     def expire_where: () { (Integer key) -> boolish } -> Integer
   end
 end

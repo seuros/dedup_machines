@@ -214,7 +214,7 @@ ledger.admit(DedupMachines::Attempt.new(3, nil, 9), 0, 100)     # => :partition_
 ledger.admit(DedupMachines::Attempt.new(3, nil, 8), 0, 100)     # => an Acquired
 ```
 
-`with_partition_cap` returns a capped copy and leaves the receiver alone. An attempt with a `nil` partition isn't counted.
+`with_partition_cap` returns a capped copy and leaves the receiver alone. An attempt with a `nil` partition isn't counted. A cap past the platform's `usize` (only possible on a 32-bit host) raises `RangeError` rather than being rounded to one you didn't ask for.
 
 ### Dropping the ownerless
 
@@ -223,6 +223,8 @@ When a tenant leaves, its records don't have to wait out their ttl:
 ```ruby
 ledger.expire_where { |key| key < 3 }   # => how many live records it dropped
 ```
+
+The block is asked about every live key before anything is dropped, so a block that raises drops nothing. Only records the block was shown are dropped: if the block abandons a key and claims it again, the new claim stays.
 
 ### Capacity
 
@@ -282,16 +284,16 @@ ledger = DedupMachines::Ledger.resumed(*saved)   # => a Ledger, or RangeError
 
 Honoured answers say what happened. Refusals are symbols, one per reason, and a refused call changed nothing: not a record, not the clock, not an id.
 
-| Call | Honoured | Refusals |
-| --- | --- | --- |
-| `claim(key, now, ttl)` | `Acquired`, `:in_progress`, `Completed` | `:time_regression`, `:invalid_duration`, `:overflow`, `:conflict`, `:exhausted`, `:full` |
-| `claim_with(key, fingerprint, now, ttl)` | as `claim` | as `claim` |
-| `admit(attempt, now, ttl)` | as `claim` | as `claim`, plus `:partition_full` |
-| `complete(id, now)` | `:completed`, `:already_completed` | `:stale`, `:time_regression`, `:mismatch` |
-| `complete_with(id, value, now)` | `:completed`, `:already_completed` | `:stale`, `:time_regression`, `:mismatch` |
-| `abandon(id)` | `:abandoned` | `:stale`, `:concluded` |
-| `expire_where { \|key\| ... }` | an Integer count; a drain never refuses | |
-| `Ledger.resumed(entries, scope, issued, observed)` | a `Ledger` | none: raises `RangeError` for saved state that isn't that scope's |
+| Call | Honoured | Records `now` | Refusals |
+| --- | --- | --- | --- |
+| `claim(key, now, ttl)` | `Acquired`, `:in_progress`, `Completed` | every honoured answer: each depends on what expired by `now` | `:time_regression`, `:invalid_duration`, `:overflow`, `:conflict`, `:exhausted`, `:full` |
+| `claim_with(key, fingerprint, now, ttl)` | as `claim` | as `claim` | as `claim` |
+| `admit(attempt, now, ttl)` | as `claim` | as `claim` | as `claim`, plus `:partition_full` |
+| `complete(id, now)` | `:completed`, `:already_completed` | `:completed` only; a repeat holds whatever the time | `:stale`, `:time_regression`, `:mismatch` |
+| `complete_with(id, value, now)` | `:completed`, `:already_completed` | as `complete` | `:stale`, `:time_regression`, `:mismatch` |
+| `abandon(id)` | `:abandoned` | takes no clock; judges liveness at `observed` | `:stale`, `:concluded` |
+| `expire_where { \|key\| ... }` | an Integer count; a drain never refuses | takes no clock; judges liveness at `observed` | |
+| `Ledger.resumed(entries, scope, issued, observed)` | a `Ledger` | | none: raises `RangeError` for saved state that isn't that scope's |
 
 What each refusal means:
 
@@ -316,6 +318,8 @@ What each refusal means:
 - **A refusal about time is about the instant you gave.** `:stale` for an expired claim and `:time_regression` record nothing; the same call at another instant may be honoured. Only honoured calls move the clock.
 - **Repeats are honoured when they can be proved.** Completing a completed claim with the same value is `:already_completed`. With another value it's `:mismatch`. A second `abandon` is `:stale`, because nothing is left to prove it by.
 - **Ids are never reissued.** Not when a slot is reused, not when the key is claimed again. An id from another scope is `:stale` before the ledger looks anything up.
+- **Values are valid or don't exist.** `ClaimId`, `Acquired`, `Completed`, `Attempt` and `Entry` check themselves when built, by hand or by the ledger: `TypeError` for the wrong type, `RangeError` for a value the core rejects. `ClaimId.new(0)` raises `RangeError`: no ledger issues a sequence of zero. They are final: subclassing one raises `TypeError` and `allocate` is gone. That stops accidents, not reflection (a named subclass still leaves its constant behind; `Marshal.load` and a hand-bound `Data#initialize` skip the check), so the extension is the authority: every `ClaimId`, `Attempt` or `Entry` it reads must be exactly its class (`TypeError` otherwise, a subclass included), and its fields are read natively and checked again (`RangeError`). A forged value never reaches the ledger and never earns a refusal symbol.
+- **Nothing is lost to an exception.** Every argument is checked before the ledger is asked, and the value classes are resolved once, when the extension loads. Building an answer runs Ruby code (`new`, which a reopened class can redefine), so `claim`, `claim_with` and `admit` decide on a copy, build the answer, and keep the copy only if the ledger is still unfrozen and unchanged: a `new` that raises applies nothing (no claim is taken whose id you never saw), one that freezes the ledger raises `FrozenError`, one that calls back in and changes it raises `RuntimeError`, and the outer call is not applied. No call holds the ledger borrowed while Ruby code runs, so calling back in is never fatal.
 - **Frozen means frozen.** `freeze` the ledger and `claim`, `claim_with`, `admit`, `complete`, `complete_with`, `abandon`, and `expire_where` all raise `FrozenError`.
 
 ## What You Think You're Doing vs Reality

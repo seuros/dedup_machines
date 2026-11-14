@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use periscope_machines::scope_of;
+use periscope_machines::{scope_of, sequence_of};
 
 /// Identity of one acquired claim.
 ///
@@ -9,14 +9,27 @@ use periscope_machines::scope_of;
 /// integer underneath ([`ClaimId::raw`]), so it can cross a queue or a
 /// database column and be rebuilt with [`ClaimId::from_raw`]; a rebuilt id
 /// the ledger never issued is [`Refusal::Stale`](crate::Refusal::Stale).
+/// Every `ClaimId` has a sequence of at least one: no ledger issues zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClaimId(u64);
 
 impl ClaimId {
-    /// Rebuild an id from its integer form. Any integer is accepted here; the
-    /// ledger decides whether it names a claim.
+    /// Rebuild an id from its integer form.
+    ///
+    /// `None` when the sequence (the low 48 bits) is zero, which no ledger
+    /// issues. Anything else is accepted here; the ledger decides whether it
+    /// names a claim.
     #[must_use]
-    pub const fn from_raw(raw: u64) -> Self {
+    pub const fn from_raw(raw: u64) -> Option<Self> {
+        if sequence_of(raw) == 0 {
+            None
+        } else {
+            Some(Self(raw))
+        }
+    }
+
+    /// The id an issuer just handed out: its sequence starts at one.
+    pub(crate) const fn issued(raw: u64) -> Self {
         Self(raw)
     }
 
@@ -180,6 +193,23 @@ impl<K, V> Entry<K, V> {
         match &self.state {
             State::Completed(value) => Some(value),
             State::Pending => None,
+        }
+    }
+
+    /// Record `value` on a pending claim: the one change a stored record
+    /// ever sees, for a [`Storage::complete`](crate::Storage::complete) of a
+    /// backend of your own.
+    ///
+    /// # Errors
+    /// `value`, handed back with nothing changed, when the claim is already
+    /// completed: the recorded value stands.
+    pub fn complete(&mut self, value: V) -> Result<(), V> {
+        match self.state {
+            State::Pending => {
+                self.state = State::Completed(value);
+                Ok(())
+            }
+            State::Completed(_) => Err(value),
         }
     }
 

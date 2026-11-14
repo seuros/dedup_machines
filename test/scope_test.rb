@@ -52,7 +52,7 @@ class ScopeTest < Minitest::Test
     pending, done = [pending.raw, done.raw].map { |raw| ClaimId.new(raw) }
     assert_equal :already_completed, ledger.complete(done, 1)
     assert_equal :abandoned, ledger.abandon(pending)
-    [0, (5 << 48) | 3, (4 << 48) | 2, 2**64 - 1].each do |raw|
+    [(5 << 48) | 3, (4 << 48) | 2, 2**64 - 1].each do |raw|
       assert_equal :stale, ledger.abandon(ClaimId.new(raw))
     end
   end

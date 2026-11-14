@@ -197,7 +197,8 @@ impl<S: Storage<Key = u64, Value = u8> + Clone + PartialEq + Debug> Run<S> {
 
     /// A handed-out id, a forged one, or one from another scope.
     fn named(&mut self, seen: &mut Seen) -> u64 {
-        let guess = scoped(self.model.scope, self.rng.next(self.model.issued + 3));
+        // A sequence of zero builds no `ClaimId` at all.
+        let guess = scoped(self.model.scope, 1 + self.rng.next(self.model.issued + 2));
         let named = match (self.rng.next(8), self.handed.len()) {
             (0, _) | (_, 0) => guess,
             (_, held) => self.handed[held - 1 - self.rng.pick(held.min(4))],
@@ -261,9 +262,7 @@ impl<S: Storage<Key = u64, Value = u8> + Clone + PartialEq + Debug> Run<S> {
         let (claim, value, now) = (self.named(seen), self.rng.next(2), self.now());
         let value = u8::try_from(value).unwrap_or(0);
         let before = self.ledger.clone();
-        let got = self
-            .ledger
-            .complete_with(ClaimId::from_raw(claim), value, at(now));
+        let got = self.ledger.complete_with(id(claim), value, at(now));
         let want = self.model.complete(claim, value, now);
         assert_eq!(got, want.map_err(|refusal| Refused { refusal, value }));
         match got {
@@ -282,7 +281,7 @@ impl<S: Storage<Key = u64, Value = u8> + Clone + PartialEq + Debug> Run<S> {
     fn abandon(&mut self, seen: &mut Seen) {
         let claim = self.named(seen);
         let before = self.ledger.clone();
-        let got = self.ledger.abandon(ClaimId::from_raw(claim));
+        let got = self.ledger.abandon(id(claim));
         assert_eq!(got, self.model.abandon(claim));
         match got {
             Ok(()) => seen.abandoned += 1,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{acquired, at, plant};
+use crate::test_support::{acquired, an_unwinding_predicate_drops_nothing, at, id};
 
 mod backend;
 pub mod model;
@@ -23,17 +23,6 @@ fn lifecycle_is_exact_and_full_tables_do_not_evict() {
         ledger.complete(replacement, at(10)),
         Ok(Completion::Completed)
     );
-}
-
-#[test]
-fn expired_pending_workers_cannot_complete_replacements() {
-    let mut ledger = Dedup::<u64, 1>::new();
-    let stale = acquired(ledger.claim(7, at(0), at(1)));
-    let fresh = acquired(ledger.claim(7, at(1), at(1)));
-    assert_eq!(ledger.complete(stale, at(1)), Err(Refusal::Stale));
-    assert_eq!(ledger.abandon(stale), Err(Refusal::Stale));
-    assert_eq!(ledger.abandon(fresh), Ok(()));
-    assert_eq!(ledger.abandon(fresh), Err(Refusal::Stale));
 }
 
 #[test]
@@ -118,6 +107,11 @@ fn ownerless_records_expire_ahead_of_their_ttl() {
     assert_eq!(ledger.abandon(dead), Err(Refusal::Stale));
     acquired(ledger.claim((1, 2), at(1), at(10)));
     assert_eq!(ledger.complete(alive, at(1)), Ok(Completion::Completed));
+}
+
+#[test]
+fn an_unwinding_predicate_drops_nothing_from_fixed_storage() {
+    an_unwinding_predicate_drops_nothing(Dedup::<u64, 2>::new());
 }
 
 #[test]

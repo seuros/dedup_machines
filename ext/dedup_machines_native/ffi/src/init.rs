@@ -1,17 +1,23 @@
 //! Private native entry point.
-use crate::{CAPACITY, Ledger, scope_of};
+use crate::{CAPACITY, Ledger, convert};
 use magnus::{Error, Ruby, function, method, prelude::*};
 
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("DedupMachines")?;
     module.const_set("CAPACITY", CAPACITY)?;
+    crate::classes::resolve(ruby, module)?;
+    // Private hooks the Data values validate through (see lib/).
+    module.define_singleton_method("__claim_scope", function!(convert::claim_scope, 1))?;
+    module.define_singleton_method("__acquired", function!(convert::check_acquired, 1))?;
+    module.define_singleton_method("__completed", function!(convert::check_completed, 1))?;
+    module.define_singleton_method("__attempt", function!(convert::check_attempt, 1))?;
+    module.define_singleton_method("__entry", function!(convert::check_entry, 1))?;
     let class = module.define_class("Ledger", ruby.class_object())?;
     class.undef_default_alloc_func();
     class.define_singleton_method("new", function!(Ledger::new, 0))?;
     class.define_singleton_method("with_scope", function!(Ledger::with_scope, 1))?;
     class.define_singleton_method("resumed", function!(Ledger::resumed, 4))?;
-    class.define_singleton_method("__scope_of", function!(scope_of, 1))?;
     class.define_method("with_partition_cap", method!(Ledger::with_partition_cap, 1))?;
     class.define_method("scope", method!(Ledger::scope, 0))?;
     class.define_method("issued", method!(Ledger::issued, 0))?;

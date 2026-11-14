@@ -1,4 +1,5 @@
 //! Thin binding to the exact bounded claim ledger.
+mod classes;
 mod convert;
 mod init;
 
@@ -7,7 +8,8 @@ use std::cell::RefCell;
 use dedup_machines::{Attempt, Claim, ClaimId, Completion, Dedup, Fixed, Refusal, Storage};
 use magnus::{Error, Integer, RArray, Ruby, Value, prelude::*, typed_data::Obj};
 
-use convert::{Number, Scope, Stored, data, instant, refusal};
+use classes::{classes, keep};
+use convert::{Number, Scope, Stored, instant, refusal};
 
 const CAPACITY: usize = 64;
 /// What `resumed` raises for saved state the core answers `None` to.
@@ -18,11 +20,6 @@ type Core = Dedup<u64, CAPACITY, Stored>;
 #[magnus::wrap(class = "DedupMachines::Ledger", free_immediately, size)]
 struct Ledger {
     core: RefCell<Core>,
-}
-
-/// The scope a claim id carries: `ClaimId#scope`.
-const fn scope_of(raw: Number) -> u16 {
-    ClaimId::from_raw(raw.0).scope()
 }
 
 fn refused(ruby: &Ruby, why: Refusal) -> Value {
@@ -78,9 +75,18 @@ impl Ledger {
     }
 
     /// The core's builder consumes the ledger; Ruby gets a capped copy.
-    fn with_partition_cap(&self, cap: Number) -> Self {
-        let cap = usize::try_from(cap.0).unwrap_or(usize::MAX);
-        Self::wrap(self.core.borrow().clone().with_partition_cap(cap))
+    /// `RangeError` for a cap past `usize` (a 32-bit host): it is not
+    /// rounded down to a cap the caller did not ask for.
+    fn with_partition_cap(ruby: &Ruby, this: &Self, cap: Number) -> Result<Self, Error> {
+        let cap = usize::try_from(cap.0).map_err(|_| {
+            Error::new(
+                ruby.exception_range_error(),
+                "partition cap must fit the platform's usize",
+            )
+        })?;
+        Ok(Self::wrap(
+            this.core.borrow().clone().with_partition_cap(cap),
+        ))
     }
 
     fn scope(&self) -> u16 {
@@ -103,12 +109,20 @@ impl Ledger {
         CAPACITY
     }
 
-    /// Every record the store holds, as frozen `Entry` values.
+    /// Every record the store holds, as frozen `Entry` values. The records
+    /// are copied out first, so no borrow is held while `new` runs.
     fn entries(ruby: &Ruby, this: &Self) -> Result<RArray, Error> {
-        let core = this.core.borrow();
-        let entries = ruby.ary_new_capa(CAPACITY);
-        for (_, entry) in core.store().iter() {
-            entries.push(convert::entry_value(ruby, entry)?)?;
+        let classes = classes(ruby)?;
+        let records: Vec<convert::Entry> = {
+            let core = this.core.borrow();
+            core.store()
+                .iter()
+                .map(|(_, entry)| entry.clone())
+                .collect()
+        };
+        let entries = ruby.ary_new_capa(records.len());
+        for entry in &records {
+            entries.push(convert::entry_value(ruby, classes, entry)?)?;
         }
         entries.freeze();
         Ok(entries)
@@ -155,30 +169,30 @@ impl Ledger {
         now: Number,
         ttl: Number,
     ) -> Result<Value, Error> {
-        this.check_frozen()?;
-        let mut core = this.core.borrow_mut();
-        // Copy the answer out so the borrow ends before Ruby is called.
-        let answer = match core.admit(attempt, now.nanos(), ttl.nanos()) {
-            Ok(Claim::Acquired(id)) => Ok(Ok(id)),
-            Ok(Claim::Completed(value)) => Ok(Err(Some(*value))),
-            Ok(Claim::InProgress) => Ok(Err(None)),
-            Err(why) => Err(why),
-        };
-        drop(core);
-        match answer {
-            Ok(Ok(id)) => {
-                let id = convert::claim_value(ruby, id)?;
-                data(ruby, "Acquired")?.funcall("new", (id,))
+        let classes = classes(ruby)?;
+        // Decided on a copy, kept once the answer is built: after an
+        // `Acquired` the claim exists, and losing its id would strand it.
+        keep(ruby, this.as_value(), &this.core, |core| {
+            match core.admit(attempt, now.nanos(), ttl.nanos()) {
+                Ok(Claim::Acquired(id)) => {
+                    let id = convert::claim_value(classes, id)?;
+                    classes.acquired.funcall("new", (id,))
+                }
+                Ok(Claim::Completed(value)) => classes.completed.funcall("new", (*value,)),
+                Ok(Claim::InProgress) => Ok(ruby.to_symbol("in_progress").as_value()),
+                Err(why) => Ok(refused(ruby, why)),
             }
-            Ok(Err(Some(value))) => data(ruby, "Completed")?.funcall("new", (value,)),
-            Ok(Err(None)) => Ok(ruby.to_symbol("in_progress").as_value()),
-            Err(why) => Ok(refused(ruby, why)),
-        }
+        })
+    }
+
+    /// The claim a settling call names, once the ledger is known mutable.
+    fn settling(ruby: &Ruby, this: Obj<Self>, claim: Value) -> Result<ClaimId, Error> {
+        this.check_frozen()?;
+        convert::claim_id(ruby, claim)
     }
 
     fn complete(ruby: &Ruby, this: Obj<Self>, claim: Value, now: Number) -> Result<Value, Error> {
-        this.check_frozen()?;
-        let claim = convert::claim_id(ruby, claim)?;
+        let claim = Self::settling(ruby, this, claim)?;
         let outcome = this.core.borrow_mut().complete(claim, now.nanos());
         Ok(Self::completion(ruby, outcome))
     }
@@ -192,8 +206,7 @@ impl Ledger {
         value: Number,
         now: Number,
     ) -> Result<Value, Error> {
-        this.check_frozen()?;
-        let claim = convert::claim_id(ruby, claim)?;
+        let claim = Self::settling(ruby, this, claim)?;
         let mut core = this.core.borrow_mut();
         let outcome = core.complete_with(claim, value.0, now.nanos());
         Ok(Self::completion(ruby, outcome.map_err(|back| back.refusal)))
@@ -208,8 +221,7 @@ impl Ledger {
     }
 
     fn abandon(ruby: &Ruby, this: Obj<Self>, claim: Value) -> Result<Value, Error> {
-        this.check_frozen()?;
-        let claim = convert::claim_id(ruby, claim)?;
+        let claim = Self::settling(ruby, this, claim)?;
         Ok(match this.core.borrow_mut().abandon(claim) {
             Ok(()) => ruby.to_symbol("abandoned").as_value(),
             Err(why) => refused(ruby, why),
@@ -218,25 +230,35 @@ impl Ledger {
 
     /// The block sees each live key once, before anything is dropped and with
     /// the ledger unborrowed, so a block that raises leaves it untouched.
+    /// Only a record the block was shown is dropped: if the block itself
+    /// abandoned a key and claimed it again, the new claim stays.
     fn expire_where(ruby: &Ruby, this: Obj<Self>) -> Result<usize, Error> {
         this.check_frozen()?;
         let block = ruby.block_proc()?;
-        let core = this.core.borrow();
-        let observed = core.observed();
-        let live = core
-            .store()
-            .iter()
-            .filter(|(_, entry)| entry.expires() > observed);
-        let keys: Vec<u64> = live.map(|(_, entry)| *entry.key()).collect();
-        drop(core);
-        let mut dead = Vec::with_capacity(keys.len());
-        for key in keys {
+        let shown = Self::live(&this.core.borrow());
+        let mut dead = Vec::with_capacity(shown.len());
+        for (key, claim) in shown {
             let verdict: Value = block.call((key,))?;
             if verdict.to_bool() {
-                dead.push(key);
+                dead.push((key, claim));
             }
         }
+        this.check_frozen()?;
         let mut core = this.core.borrow_mut();
-        Ok(core.expire_where(|key| dead.contains(key)))
+        // The block ran with the ledger free: keep only the verdicts on
+        // records still held under the claim the block saw.
+        let held = Self::live(&core);
+        dead.retain(|record| held.contains(record));
+        Ok(core.expire_where(|key| dead.iter().any(|(dead, _)| dead == key)))
+    }
+
+    /// Key and claim id of every record live at the observed clock.
+    fn live(core: &Core) -> Vec<(u64, ClaimId)> {
+        let observed = core.observed();
+        core.store()
+            .iter()
+            .filter(|(_, entry)| entry.expires() > observed)
+            .map(|(_, entry)| (*entry.key(), entry.claim()))
+            .collect()
     }
 }

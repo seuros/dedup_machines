@@ -1,10 +1,20 @@
 //! A backend defined outside the crate: two slots, no hashing.
 
 use super::*;
+use crate::storage::slots;
+use crate::test_support::{an_unwinding_predicate_drops_nothing, record};
 
+/// Unlike `Fixed`, its `insert` checks nothing: it takes a second record
+/// under a key or a claim id it already holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pair {
     entries: [Option<Entry<u64, u8>>; 2],
+}
+
+impl Pair {
+    const EMPTY: Self = Self {
+        entries: [None, None],
+    };
 }
 
 impl Storage for Pair {
@@ -12,58 +22,41 @@ impl Storage for Pair {
     type Value = u8;
 
     fn get(&self, slot: usize) -> Option<&Entry<u64, u8>> {
-        self.entries.get(slot)?.as_ref()
+        slots::get(&self.entries, slot)
     }
 
-    fn get_mut(&mut self, slot: usize) -> Option<&mut Entry<u64, u8>> {
-        self.entries.get_mut(slot)?.as_mut()
+    fn complete(&mut self, slot: usize, value: u8) -> Result<(), u8> {
+        slots::complete(&mut self.entries, slot, value)
     }
 
     fn find(&self, key: &u64) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.key() == key))
+        slots::find(&self.entries, |entry| entry.key() == key)
     }
 
     fn locate(&self, claim: ClaimId) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.claim() == claim))
+        slots::find(&self.entries, |entry| entry.claim() == claim)
     }
 
     fn insert(&mut self, entry: Entry<u64, u8>) -> Option<usize> {
-        let slot = self.entries.iter().position(Option::is_none)?;
-        self.entries[slot] = Some(entry);
-        Some(slot)
+        slots::insert(&mut self.entries, entry)
     }
 
     fn remove(&mut self, slot: usize) -> bool {
-        self.entries.get_mut(slot).and_then(Option::take).is_some()
+        slots::remove(&mut self.entries, slot)
     }
 
-    fn retain(&mut self, mut keep: impl FnMut(&Entry<u64, u8>) -> bool) -> usize {
-        let mut removed = 0;
-        for slot in &mut self.entries {
-            if slot.as_ref().is_some_and(|entry| !keep(entry)) {
-                *slot = None;
-                removed += 1;
-            }
-        }
-        removed
+    fn retain(&mut self, keep: impl FnMut(&Entry<u64, u8>) -> bool) -> usize {
+        slots::retain(&mut self.entries, keep)
     }
 
     fn iter(&self) -> impl Iterator<Item = (usize, &Entry<u64, u8>)> {
-        let held = self.entries.iter().enumerate();
-        held.filter_map(|(slot, entry)| Some((slot, entry.as_ref()?)))
+        slots::iter(&self.entries)
     }
 }
 
 #[test]
 fn a_foreign_backend_persists_and_restores_a_ledger() {
-    let empty = Pair {
-        entries: [None, None],
-    };
-    let Some(mut ledger) = Ledger::over_with_scope(empty, 2) else {
+    let Some(mut ledger) = Ledger::over_with_scope(Pair::EMPTY, 2) else {
         panic!("an empty store is always sound");
     };
     let done = acquired(ledger.claim(1, at(0), at(10)));
@@ -84,7 +77,7 @@ fn a_foreign_backend_persists_and_restores_a_ledger() {
                 *entry.key(),
                 entry.fingerprint(),
                 entry.partition(),
-                ClaimId::from_raw(entry.claim().raw()),
+                id(entry.claim().raw()),
                 entry.expires(),
                 entry.value().copied(),
             )
@@ -108,22 +101,40 @@ fn a_foreign_backend_persists_and_restores_a_ledger() {
 fn the_model_holds_over_a_foreign_backend() {
     // `Pair` has two slots; the model run sizes itself from the capacity.
     model::run(2, |scope| {
-        let empty = Pair {
-            entries: [None, None],
-        };
-        Ledger::over_with_scope(empty, scope).unwrap_or_else(|| panic!("empty"))
+        Ledger::over_with_scope(Pair::EMPTY, scope).unwrap_or_else(|| panic!("empty"))
     });
+    let ledger = Ledger::over(Pair::EMPTY).unwrap_or_else(|| panic!("empty"));
+    an_unwinding_predicate_drops_nothing(ledger);
 }
 
-/// A backend whose `insert` checks nothing can be handed the same record
-/// twice. `resumed` is what refuses it: a lookup answers one slot.
+/// A backend whose `insert` checks nothing can be handed two records under
+/// one key or one claim id, the same record twice included. `resumed` is
+/// what refuses it: a lookup answers one slot.
 #[test]
-fn a_foreign_backend_holding_one_record_twice_is_refused() {
-    let entry = || Entry::<u64, u8>::new(1, None, None, ClaimId::from_raw(1), at(100), None);
-    let mut twice = Pair {
-        entries: [None, None],
+fn a_foreign_backend_holding_a_key_or_a_claim_twice_is_refused() {
+    let resumed = |entries: [Entry<u64, u8>; 2]| {
+        let mut store = Pair::EMPTY;
+        for entry in entries {
+            assert!(store.insert(entry).is_some());
+        }
+        Ledger::resumed(store, 0, 2, at(0)).is_some()
     };
-    assert_eq!(twice.insert(entry()), Some(0));
-    assert_eq!(twice.insert(entry()), Some(1));
-    assert!(Ledger::resumed(twice, 0, 1, at(0)).is_none());
+    assert!(resumed([record(1, 1), record(2, 2)]));
+    assert!(!resumed([record(1, 1), record(1, 1)]));
+    assert!(!resumed([record(1, 1), record(1, 2)]));
+    assert!(!resumed([record(1, 1), record(2, 1)]));
+}
+
+/// One record alone is the saved state of its scope and count, and its claim
+/// is abandoned once.
+#[test]
+fn one_saved_record_is_abandoned_once() {
+    let mut store = Fixed::<u64, (), 2>::new();
+    assert_eq!(store.insert(record(1, 1)), Some(0));
+    let Some(mut ledger) = Ledger::resumed(store, 0, 1, at(0)) else {
+        panic!("one record is sound");
+    };
+    assert_eq!(ledger.abandon(id(1)), Ok(()));
+    assert_eq!(ledger.abandon(id(1)), Err(Refusal::Stale));
+    assert_eq!(acquired(ledger.claim(1, at(0), at(5))).raw(), 2);
 }

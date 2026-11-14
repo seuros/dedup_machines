@@ -35,6 +35,9 @@ pub struct Ledger<S> {
     partition_cap: Option<usize>,
 }
 
+/// The record type a backend `S` stores.
+type Record<S> = Entry<<S as Storage>::Key, <S as Storage>::Value>;
+
 /// Fixed-capacity exact-key ledger.
 pub type Dedup<K, const N: usize, V = ()> = Ledger<Fixed<K, V, N>>;
 
@@ -105,8 +108,8 @@ impl<S: Storage> Ledger<S> {
     ///
     /// `None`, refusing the saved state, when `issued` is beyond
     /// `SEQUENCE_MAX` (2^48 - 1); when a record's claim id is not one this
-    /// scope issued within `issued` (another scope, sequence zero, or beyond
-    /// the count); or when two slots carry the same key or the same claim
+    /// scope issued within `issued` (another scope, or beyond the count); or
+    /// when two slots carry the same key or the same claim
     /// id, two identical records included. Each record must be the one its
     /// key and its claim id lead to: `find` and `locate` answer its slot.
     ///
@@ -226,12 +229,8 @@ impl<S: Storage> Ledger<S> {
             return Err(Refusal::InvalidDuration);
         }
         let expires = now.checked_add(ttl).ok_or(Refusal::Overflow)?;
-        let held = self.store.find(&attempt.key).filter(|&slot| {
-            let entry = self.store.get(slot);
-            entry.is_some_and(|entry| entry.live(now))
-        });
-        if let Some(slot) = held {
-            return self.revisit(slot, attempt.fingerprint, now);
+        if self.held(&attempt.key, now).is_some() {
+            return self.revisit(&attempt.key, attempt.fingerprint, now);
         }
         if let (Some(cap), Some(partition)) = (self.partition_cap, attempt.partition) {
             let counted = |(_, entry): &(usize, &Entry<_, _>)| {
@@ -244,7 +243,7 @@ impl<S: Storage> Ledger<S> {
         // Issue on a copy: the id is consumed only once the record is stored.
         let mut claims = self.claims;
         let claim = match claims.issue() {
-            Ok(raw) => ClaimId::from_raw(raw),
+            Ok(raw) => ClaimId::issued(raw),
             Err(periscope_machines::Refusal::Exhausted) => return Err(Refusal::Exhausted),
         };
         // Removing the expired is an effect of an honoured claim only. With
@@ -316,13 +315,17 @@ impl<S: Storage> Ledger<S> {
             Ok(None) => return Ok(Completion::AlreadyCompleted),
             Err(refusal) => return Err(Refused { refusal, value }),
         };
-        let Some(entry) = self.store.get_mut(slot) else {
-            let refusal = Refusal::Stale;
-            return Err(Refused { refusal, value });
-        };
-        entry.state = State::Completed(value);
-        self.observed = now;
-        Ok(Completion::Completed)
+        match self.store.complete(slot, value) {
+            Ok(()) => {
+                self.observed = now;
+                Ok(Completion::Completed)
+            }
+            Err(value) => {
+                debug_assert!(false, "the slot `locate` answered holds a pending record");
+                let refusal = Refusal::Stale;
+                Err(Refused { refusal, value })
+            }
+        }
     }
 
     /// Free a live pending claim after a known failure, not an uncertain
@@ -340,35 +343,41 @@ impl<S: Storage> Ledger<S> {
         if !self.claims.owns(claim.raw()) {
             return Err(Refusal::Stale);
         }
-        let slot = self
+        let (slot, entry) = self
             .live_claim(claim, self.observed)
             .ok_or(Refusal::Stale)?;
-        let pending = self.store.get(slot).is_some_and(Entry::is_pending);
-        if !pending {
+        if !entry.is_pending() {
             return Err(Refusal::Concluded);
         }
-        if self.store.remove(slot) {
-            Ok(())
-        } else {
-            Err(Refusal::Stale)
+        if !self.store.remove(slot) {
+            debug_assert!(false, "the slot `locate` answered holds a record");
+            return Err(Refusal::Stale);
         }
+        Ok(())
     }
 
     /// Drain: drop every live record, pending or completed, whose key `dead`
     /// marks as ownerless, and return how many were dropped.
     ///
-    /// Records that expired by the observed clock are removed along the way,
-    /// uncounted and without being shown to `dead`: they were already absent.
+    /// The call carries no clock and records none: liveness is judged at the
+    /// observed clock. Records that expired by then are removed along the
+    /// way, uncounted and without being shown to `dead`: they were already
+    /// absent.
+    ///
+    /// Ask-then-drop: `dead` is asked about every live key before anything
+    /// is dropped (the [`Storage::retain`] contract), so a `dead` that
+    /// unwinds leaves the ledger as it was. `dead` cannot reach the ledger
+    /// while it runs; a binding whose predicate must (a Ruby block calling
+    /// back into the ledger) asks about [`Ledger::store`] first and passes
+    /// the verdicts in.
     pub fn expire_where(&mut self, mut dead: impl FnMut(&S::Key) -> bool) -> usize {
         let observed = self.observed;
         let mut dropped = 0;
         self.store.retain(|entry| {
-            if !entry.live(observed) {
-                return false;
-            }
-            let drop = dead(&entry.key);
+            let live = entry.live(observed);
+            let drop = live && dead(&entry.key);
             dropped += usize::from(drop);
-            !drop
+            live && !drop
         });
         dropped
     }
@@ -387,38 +396,47 @@ impl<S: Storage> Ledger<S> {
             return Err(Refusal::Stale);
         }
         self.check_time(now)?;
-        let slot = self.live_claim(claim, now).ok_or(Refusal::Stale)?;
-        match self.store.get(slot).map(|entry| &entry.state) {
-            Some(State::Pending) => Ok(Some(slot)),
-            Some(State::Completed(recorded)) if recorded == value => Ok(None),
-            Some(State::Completed(_)) => Err(Refusal::Mismatch),
-            None => Err(Refusal::Stale),
+        let (slot, entry) = self.live_claim(claim, now).ok_or(Refusal::Stale)?;
+        match &entry.state {
+            State::Pending => Ok(Some(slot)),
+            State::Completed(recorded) if recorded == value => Ok(None),
+            State::Completed(_) => Err(Refusal::Mismatch),
         }
     }
 
-    /// The slot of the record claimed under `claim`, if it is live at `now`.
-    fn live_claim(&self, claim: ClaimId, now: Duration) -> Option<usize> {
-        self.store.locate(claim).filter(|&slot| {
-            let entry = self.store.get(slot);
-            entry.is_some_and(|entry| entry.claim == claim && entry.live(now))
-        })
+    /// The record claimed under `claim` and its slot, if it is live at `now`.
+    fn live_claim(&self, claim: ClaimId, now: Duration) -> Option<(usize, &Record<S>)> {
+        let slot = self.store.locate(claim)?;
+        let entry = self.store.get(slot)?;
+        (entry.claim == claim && entry.live(now)).then_some((slot, entry))
     }
 
+    /// The record held under `key`, if it is live at `now`.
+    fn held(&self, key: &S::Key, now: Duration) -> Option<&Record<S>> {
+        let entry = self.store.get(self.store.find(key)?)?;
+        entry.live(now).then_some(entry)
+    }
+
+    /// Answer a claim of a key that is live at `now`.
     fn revisit(
         &mut self,
-        slot: usize,
+        key: &S::Key,
         fingerprint: Option<u64>,
         now: Duration,
     ) -> Result<Claim<'_, S::Value>, Refusal> {
-        let entry = self.store.get(slot);
-        if entry.is_none_or(|entry| entry.fingerprint != fingerprint) {
+        // `admit` saw this record a line before calling; it is read again
+        // only because a borrow cannot be returned from one branch of it.
+        let Some(entry) = self.store.find(key).and_then(|slot| self.store.get(slot)) else {
+            debug_assert!(false, "the key `admit` found live is still held");
+            return Err(Refusal::Conflict);
+        };
+        if entry.fingerprint != fingerprint {
             return Err(Refusal::Conflict);
         }
         self.observed = now;
-        match self.store.get(slot).map(|entry| &entry.state) {
-            Some(State::Completed(value)) => Ok(Claim::Completed(value)),
-            // `None` cannot happen: the slot was read a line above.
-            Some(State::Pending) | None => Ok(Claim::InProgress),
+        match &entry.state {
+            State::Completed(value) => Ok(Claim::Completed(value)),
+            State::Pending => Ok(Claim::InProgress),
         }
     }
 

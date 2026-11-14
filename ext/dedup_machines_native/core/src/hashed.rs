@@ -5,6 +5,7 @@ use core::time::Duration;
 use hashbrown::{DefaultHashBuilder, HashTable};
 use periscope_machines::Issuer;
 
+use crate::storage::slots;
 use crate::{ClaimId, Entry, Ledger, Storage};
 
 /// Heap-backed storage with a runtime capacity and hashed lookup, by key and
@@ -75,7 +76,7 @@ impl<K: Hash + Eq, V, H: BuildHasher> Hashed<K, V, H> {
     }
 
     fn at(&self, slot: usize) -> Option<&Entry<K, V>> {
-        self.slots.get(slot)?.as_ref()
+        slots::get(&self.slots, slot)
     }
 
     fn unlink(&mut self, slot: usize) -> bool {
@@ -109,8 +110,8 @@ impl<K: Hash + Eq, V, H: BuildHasher> Storage for Hashed<K, V, H> {
         self.at(slot)
     }
 
-    fn get_mut(&mut self, slot: usize) -> Option<&mut Entry<K, V>> {
-        self.slots.get_mut(slot)?.as_mut()
+    fn complete(&mut self, slot: usize, value: V) -> Result<(), V> {
+        slots::complete(&mut self.slots, slot, value)
     }
 
     fn find(&self, key: &K) -> Option<usize> {
@@ -159,19 +160,18 @@ impl<K: Hash + Eq, V, H: BuildHasher> Storage for Hashed<K, V, H> {
         self.unlink(slot)
     }
 
+    /// Ask-then-drop: the doomed slots are collected before any is unlinked.
     fn retain(&mut self, mut keep: impl FnMut(&Entry<K, V>) -> bool) -> usize {
-        let mut removed = 0;
-        for slot in 0..self.slots.len() {
-            if self.at(slot).is_some_and(|entry| !keep(entry)) && self.unlink(slot) {
-                removed += 1;
-            }
-        }
-        removed
+        let doomed: Vec<usize> = self
+            .iter()
+            .filter(|(_, entry)| !keep(entry))
+            .map(|(slot, _)| slot)
+            .collect();
+        doomed.into_iter().filter(|&slot| self.unlink(slot)).count()
     }
 
     fn iter(&self) -> impl Iterator<Item = (usize, &Entry<K, V>)> {
-        let held = self.slots.iter().enumerate();
-        held.filter_map(|(slot, entry)| Some((slot, entry.as_ref()?)))
+        slots::iter(&self.slots)
     }
 }
 

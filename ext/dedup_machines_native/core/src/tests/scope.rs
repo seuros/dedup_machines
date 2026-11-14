@@ -3,6 +3,8 @@
 use super::*;
 use periscope_machines::scoped;
 
+use crate::test_support::{holds_the_storage_contract, record};
+
 /// Key 1 pending and key 2 completed, both claimed at 0 for 20.
 fn settled(scope: u16) -> (Dedup<u64, 3>, ClaimId, ClaimId) {
     let mut ledger = Dedup::<u64, 3>::with_scope(scope);
@@ -18,9 +20,16 @@ fn ids_carry_the_scope_above_a_sequence_from_one() {
     assert_eq!((ledger.scope(), ledger.issued()), (7, 2));
     assert_eq!((pending.scope(), done.scope()), (7, 7));
     assert_eq!((pending.raw(), done.raw()), (scoped(7, 1), scoped(7, 2)));
-    assert_eq!(ClaimId::from_raw(pending.raw()), pending);
+    assert_eq!(id(pending.raw()), pending);
     assert_eq!(Dedup::<u64, 3>::new().scope(), 0);
     assert_eq!(Dedup::<u64, 3>::default(), Dedup::<u64, 3>::with_scope(0));
+    // No ledger issues a sequence of zero, in any scope, so no id carries one.
+    for raw in [0, scoped(7, 0), scoped(u16::MAX, 0)] {
+        assert_eq!(ClaimId::from_raw(raw), None);
+    }
+    for raw in [1, scoped(7, 1), u64::MAX] {
+        assert_eq!(ClaimId::from_raw(raw).map(ClaimId::raw), Some(raw));
+    }
 }
 
 #[test]
@@ -58,31 +67,16 @@ fn a_claim_from_another_ledger_settles_nothing() {
 fn a_claim_id_crosses_a_queue_as_an_integer() {
     let (mut ledger, pending, done) = settled(5);
     let wire: [u64; 2] = [pending.raw(), done.raw()];
-    let [pending, done] = wire.map(ClaimId::from_raw);
+    let [pending, done] = wire.map(id);
     assert_eq!(
         ledger.complete(done, at(1)),
         Ok(Completion::AlreadyCompleted)
     );
     assert_eq!(ledger.abandon(pending), Ok(()));
     // A forged integer names nothing, in or out of the issued range.
-    for raw in [0, scoped(5, 3), scoped(5, 1), scoped(4, 2), u64::MAX] {
-        assert_eq!(ledger.abandon(ClaimId::from_raw(raw)), Err(Refusal::Stale));
+    for raw in [scoped(5, 3), scoped(5, 1), scoped(4, 2), u64::MAX] {
+        assert_eq!(ledger.abandon(id(raw)), Err(Refusal::Stale));
     }
-}
-
-#[test]
-fn ids_are_never_reissued_across_slot_reuse() {
-    let mut ledger = Dedup::<u64, 1>::with_scope(9);
-    let mut seen = std::vec::Vec::new();
-    for round in 0..5 {
-        let id = acquired(ledger.claim(1, at(round), at(1)));
-        assert!(!seen.contains(&id));
-        for old in &seen {
-            assert_eq!(ledger.abandon(*old), Err(Refusal::Stale));
-        }
-        seen.push(id);
-    }
-    assert_eq!(ledger.issued(), 5);
 }
 
 #[test]
@@ -127,63 +121,28 @@ fn a_restart_resumes_the_sequence_in_its_scope() {
 }
 
 #[test]
-fn inconsistent_saved_records_are_refused() {
-    let entry = |key: u64, raw: u64| {
-        Entry::<u64, ()>::new(key, None, None, ClaimId::from_raw(raw), at(9), None)
-    };
-    let store = |entries: [Entry<u64, ()>; 2]| {
+fn saved_records_this_scope_never_issued_are_refused() {
+    let resumed = |entries: [Entry<u64, ()>; 2]| {
         let mut store = Fixed::<u64, (), 2>::new();
         for entry in entries {
-            plant(&mut store, entry);
+            assert!(store.insert(entry).is_some());
         }
-        store
+        Ledger::resumed(store, 0, 5, at(0)).is_some()
     };
-    let resumed = |entries| Ledger::resumed(store(entries), 0, 5, at(0)).is_some();
-    assert!(resumed([entry(1, 1), entry(2, 5)]));
-    // A sequence of zero, one past the count, another scope.
-    assert!(!resumed([entry(1, 1), entry(2, 0)]));
-    assert!(!resumed([entry(1, 1), entry(2, 6)]));
-    assert!(!resumed([entry(1, 1), entry(2, scoped(1, 2))]));
-    // Two records under one key, two under one claim id, the same one twice.
-    assert!(!resumed([entry(1, 1), entry(1, 2)]));
-    assert!(!resumed([entry(1, 1), entry(2, 1)]));
-    assert!(!resumed([entry(1, 1), entry(1, 1)]));
+    assert!(resumed([record(1, 1), record(2, 5)]));
+    // One past the count, another scope.
+    assert!(!resumed([record(1, 1), record(2, 6)]));
+    assert!(!resumed([record(1, 1), record(2, scoped(1, 2))]));
 }
 
-/// The defect: `resumed` asked only that each record's key led to its claim
-/// id and its claim id to its key, which two identical records satisfy. The
-/// ledger then abandoned claim 1 twice, the key staying held in between.
+/// The defect: `Storage::get_mut` handed out a whole record to overwrite, so
+/// a store could be made to hold one key or one claim id twice. The one
+/// change a stored record sees is now `complete`.
 #[test]
-fn two_identical_records_are_refused() {
-    let entry = || Entry::<u64, ()>::new(1, None, None, ClaimId::from_raw(1), at(100), None);
-    let mut store = Fixed::<u64, (), 2>::new();
-    plant(&mut store, entry());
-    plant(&mut store, entry());
-    assert_eq!(store.iter().count(), 2);
-    assert!(Ledger::resumed(store, 0, 1, at(0)).is_none());
-    // One of them alone is the saved state of that scope and count.
-    let mut store = Fixed::<u64, (), 2>::new();
-    plant(&mut store, entry());
-    let Some(mut ledger) = Ledger::resumed(store, 0, 1, at(0)) else {
-        panic!("one record is sound");
-    };
-    assert_eq!(ledger.abandon(ClaimId::from_raw(1)), Ok(()));
-    assert_eq!(ledger.abandon(ClaimId::from_raw(1)), Err(Refusal::Stale));
-    assert_eq!(acquired(ledger.claim(1, at(0), at(5))).raw(), 2);
-}
-
-#[test]
-fn fixed_storage_holds_one_record_per_key_and_per_claim() {
-    let entry = |key: u64, raw: u64| {
-        Entry::<u64, ()>::new(key, None, None, ClaimId::from_raw(raw), at(9), None)
-    };
-    let mut store = Fixed::<u64, (), 3>::new();
-    assert_eq!(store.insert(entry(1, 1)), Some(0));
-    let before = store.clone();
-    // The same record, the same key, the same claim id: nothing is stored.
-    for second in [entry(1, 1), entry(1, 2), entry(2, 1)] {
-        assert_eq!(store.insert(second), None);
-        assert_eq!(store, before);
-    }
-    assert_eq!(store.insert(entry(2, 2)), Some(1));
+fn fixed_storage_keeps_the_storage_contract() {
+    holds_the_storage_contract(Fixed::<u64, u8, 3>::new());
+    let mut record = record::<u8>(2, 2);
+    assert_eq!(record.complete(3), Ok(()));
+    assert_eq!(record.complete(4), Err(4));
+    assert_eq!(record.value(), Some(&3));
 }

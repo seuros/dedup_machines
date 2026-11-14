@@ -73,14 +73,23 @@ not answer or a request it could not carry out: a malformed call
 payload (`Conflict`), no room (`Full`, `PartitionFull`), no id left
 (`Exhausted`).
 
-| Call | Honoured | Refusals, in the order checked |
-| --- | --- | --- |
-| `claim`, `claim_with` | `Acquired(ClaimId)`, `InProgress`, `Completed(&V)` | `TimeRegression`, `InvalidDuration`, `Overflow`, `Conflict`, `Exhausted`, `Full` |
-| `admit` | as `claim` | as `claim`, with `PartitionFull` after `Conflict` |
-| `complete` | `Completed`, `AlreadyCompleted` | `Stale` (never issued), `TimeRegression`, `Stale` (not live at `now`), `Mismatch` |
-| `complete_with` | as `complete` | as `complete`, inside `Refused { refusal, value }` |
-| `abandon` | `()` | `Stale`, `Concluded` |
-| `expire_where` | how many it dropped (a drain: never refuses) | |
+| Call | Honoured | Records `now` | Refusals, in the order checked |
+| --- | --- | --- | --- |
+| `claim`, `claim_with` | `Acquired(ClaimId)`, `InProgress`, `Completed(&V)` | every honoured answer | `TimeRegression`, `InvalidDuration`, `Overflow`, `Conflict`, `Exhausted`, `Full` |
+| `admit` | as `claim` | as `claim` | as `claim`, with `PartitionFull` after `Conflict` |
+| `complete` | `Completed`, `AlreadyCompleted` | `Completed` only | `Stale` (never issued), `TimeRegression`, `Stale` (not live at `now`), `Mismatch` |
+| `complete_with` | as `complete` | as `complete` | as `complete`, inside `Refused { refusal, value }` |
+| `abandon` | `()` | takes no clock | `Stale`, `Concluded` |
+| `expire_where` | how many it dropped (a drain: never refuses) | takes no clock | |
+
+**Which answers record the clock.** An honoured answer records `now` exactly
+when it depends on `now`. All three claim answers do: whether the key is
+`Acquired`, `InProgress` or `Completed` turns on which records have expired by
+`now`, and recording it keeps the answer true (an earlier instant is refused
+afterwards). `Completion::Completed` does too: the claim had to be live at
+`now`. `Completion::AlreadyCompleted` holds whatever the time and records
+nothing. `abandon` and `expire_where` take no clock and judge liveness at the
+*observed* clock, which they leave alone.
 
 `complete_with` takes its value by move, so its error is `Refused<V>`: the one
 `Refusal` plus the value handed back untouched. It is a carrier, not a second
@@ -106,7 +115,10 @@ that are honoured and need it:
   clock reaches its expiry. It removes that one record.
 - `expire_where` removes the records it was asked to drop and those that
   expired by the observed clock; it counts only the former and never shows an
-  expired record to the predicate.
+  expired record to the predicate. It asks the predicate about every live key
+  before dropping any (the `Storage::retain` contract), so a predicate that
+  unwinds drops nothing. A binding whose predicate calls back into the ledger
+  asks about `store()` first and passes the verdicts in (the Ruby gem does).
 - No refusal removes an expired record. `Full` means every slot holds a *live*
   record at `now`.
 
@@ -159,7 +171,9 @@ scope zero; `with_scope(scope)` picks another. Two ledgers in one scope issue
 the same integers, so give every ledger whose ids could meet its own scope: an
 id of another scope, or one this ledger has not issued yet, is `Stale` before
 any record is looked up. `ClaimId::raw` and `ClaimId::from_raw` carry an id
-across a queue or a column; `ClaimId::scope` reads its scope.
+across a queue or a column; `ClaimId::scope` reads its scope. `from_raw`
+answers `None` for a sequence of zero, which no ledger issues: a `ClaimId`
+that exists names a sequence of at least one.
 
 **Restarts.** `Ledger::resumed(store, scope, issued, observed)` continues a
 persisted ledger from `Ledger::issued` and `Ledger::observed`, so no id that
@@ -187,9 +201,13 @@ rules keep refusals free of side effects: an `insert` that answers `None`
 stored nothing, and an `insert` right after a `retain` that dropped a record
 finds room.
 
+A stored record changes in one way only: `Storage::complete` records the value
+on a pending record (`Entry::complete` does it for a backend of your own). Its
+key and claim id never change, so neither lookup goes stale, and no stored
+record can be overwritten into a second one under a key or id already held.
+
 No two held records share a key or a claim id. `Fixed` and `Hashed` answer
 `None` to an `insert` that would break that, and store nothing. A backend of
-your own may not check, and any backend can be overwritten in place through
-`get_mut`, so `Ledger::resumed` is the gate: it refuses a store in which some
-record is not the one `find` answers for its key and `locate` answers for its
-claim id.
+your own may not check, so `Ledger::resumed` is the gate: it refuses a store in
+which some record is not the one `find` answers for its key and `locate`
+answers for its claim id.

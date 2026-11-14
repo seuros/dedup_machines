@@ -80,13 +80,12 @@ fn an_exhausted_scope_refuses_without_removing_or_observing() {
 fn a_refused_completion_changes_nothing_and_returns_the_value() {
     let (mut ledger, expired, pending, done) = busy();
     let before = ledger.clone();
-    let never = ClaimId::from_raw(ledger.issued() + 1);
+    let never = id(ledger.issued() + 1);
     let refused = [
         (pending, 1, at(1), Refusal::TimeRegression),
         (done, 7, at(1), Refusal::TimeRegression),
         // An id never issued is refused before the clock is read.
         (never, 1, at(1), Refusal::Stale),
-        (ClaimId::from_raw(0), 1, at(3), Refusal::Stale),
         (expired, 1, at(3), Refusal::Stale),
         (pending, 1, at(20), Refusal::Stale),
         (done, 7, at(20), Refusal::Stale),
@@ -130,10 +129,9 @@ fn a_repeated_completion_is_honoured_and_changes_nothing() {
 fn a_refused_abandon_changes_nothing() {
     let (mut ledger, expired, pending, done) = busy();
     let before = ledger.clone();
-    let never = ClaimId::from_raw(ledger.issued() + 1);
+    let never = id(ledger.issued() + 1);
     let refused = [
         (never, Refusal::Stale),
-        (ClaimId::from_raw(0), Refusal::Stale),
         (expired, Refusal::Stale),
         (done, Refusal::Concluded),
     ];

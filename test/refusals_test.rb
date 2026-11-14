@@ -45,7 +45,6 @@ class RefusalsTest < Minitest::Test
     assert_unchanged(ledger) do
       assert_equal :time_regression, ledger.complete(pending, 1)
       assert_equal :stale, ledger.complete(never, 1)
-      assert_equal :stale, ledger.complete(ClaimId.new(0), 3)
       assert_equal :stale, ledger.complete(expired, 3)
       assert_equal :stale, ledger.complete(pending, 20)
       assert_equal :mismatch, ledger.complete_with(done, 8, 3)
