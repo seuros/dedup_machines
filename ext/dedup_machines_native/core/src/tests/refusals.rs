@@ -1,6 +1,7 @@
 //! A refusal changes nothing; an honoured repeat changes nothing either.
 
 use super::*;
+use matryona_machines::testing::{refuses, unchanged};
 use periscope_machines::SEQUENCE_MAX;
 
 /// One record that expired at 1 (key 9), one live fingerprinted pending
@@ -22,7 +23,6 @@ fn busy() -> (Dedup<u64, 4, u8>, ClaimId, ClaimId, ClaimId) {
 #[test]
 fn a_refused_claim_changes_nothing() {
     let (mut ledger, ..) = busy();
-    let before = ledger.clone();
     let key = |key: u64| Attempt::new(key);
     let refused = [
         (key(5), at(1), at(5), Refusal::TimeRegression),
@@ -37,8 +37,7 @@ fn a_refused_claim_changes_nothing() {
         (key(5).partition(4), at(3), at(5), Refusal::PartitionFull),
     ];
     for (attempt, now, ttl, why) in refused {
-        assert_eq!(ledger.admit(attempt, now, ttl), Err(why));
-        assert_eq!(ledger, before, "{why:?} changed the ledger");
+        refuses(&mut ledger, why, |l| l.admit(attempt, now, ttl).map(drop));
     }
     // The expired record is still held: no refusal removed it.
     assert_eq!(ledger.store().iter().count(), 3);
@@ -49,9 +48,9 @@ fn a_full_table_refuses_without_removing_or_observing() {
     let mut ledger = Dedup::<u64, 2>::new();
     acquired(ledger.claim(1, at(0), at(5)));
     acquired(ledger.claim(2, at(0), at(9)));
-    let before = ledger.clone();
-    assert_eq!(ledger.claim(3, at(4), at(9)), Err(Refusal::Full));
-    assert_eq!(ledger, before);
+    refuses(&mut ledger, Refusal::Full, |l| {
+        l.claim(3, at(4), at(9)).map(drop)
+    });
     assert_eq!(
         Dedup::<u64, 0>::new().claim(0, at(0), at(1)),
         Err(Refusal::Full)
@@ -69,17 +68,16 @@ fn an_exhausted_scope_refuses_without_removing_or_observing() {
     };
     let last = acquired(ledger.claim(9, at(0), at(1)));
     assert_eq!(last.raw(), periscope_machines::scoped(3, SEQUENCE_MAX));
-    let before = ledger.clone();
     // Key 9 has expired and its slot is free to take, but no id is left.
-    assert_eq!(ledger.claim(1, at(2), at(9)), Err(Refusal::Exhausted));
-    assert_eq!(ledger, before);
+    refuses(&mut ledger, Refusal::Exhausted, |l| {
+        l.claim(1, at(2), at(9)).map(drop)
+    });
     assert!(Ledger::resumed(Fixed::<u64, (), 2>::new(), 3, SEQUENCE_MAX + 1, at(0)).is_none());
 }
 
 #[test]
 fn a_refused_completion_changes_nothing_and_returns_the_value() {
     let (mut ledger, expired, pending, done) = busy();
-    let before = ledger.clone();
     let never = id(ledger.issued() + 1);
     let refused = [
         (pending, 1, at(1), Refusal::TimeRegression),
@@ -92,43 +90,37 @@ fn a_refused_completion_changes_nothing_and_returns_the_value() {
         (done, 8, at(3), Refusal::Mismatch),
     ];
     for (claim, value, now, refusal) in refused {
-        let got = ledger.complete_with(claim, value, now);
-        assert_eq!(got, Err(Refused { refusal, value }));
-        assert_eq!(ledger, before, "{refusal:?} changed the ledger");
+        refuses(&mut ledger, Refused { refusal, value }, |l| {
+            l.complete_with(claim, value, now)
+        });
     }
     // `complete` is `complete_with` the default value: 0 is not the 7 recorded.
-    assert_eq!(ledger.complete(done, at(3)), Err(Refusal::Mismatch));
-    assert_eq!(ledger, before);
+    refuses(&mut ledger, Refusal::Mismatch, |l| l.complete(done, at(3)));
 }
 
 #[test]
 fn a_repeated_completion_is_honoured_and_changes_nothing() {
     let (mut ledger, _, pending, done) = busy();
-    let before = ledger.clone();
     // Same claim, same value, any acceptable instant while the record lives.
     for now in [2, 3, 19] {
-        let got = ledger.complete_with(done, 7, at(now));
-        assert_eq!(got, Ok(Completion::AlreadyCompleted));
-        assert_eq!(ledger, before, "a repeat at {now} changed the ledger");
+        let got = unchanged(&mut ledger, |l| l.complete_with(done, 7, at(now)));
+        assert_eq!(got, Ok(Completion::AlreadyCompleted), "a repeat at {now}");
     }
     assert_eq!(ledger.complete(pending, at(4)), Ok(Completion::Completed));
-    let before = ledger.clone();
     assert_eq!(
-        ledger.complete(pending, at(9)),
+        unchanged(&mut ledger, |l| l.complete(pending, at(9))),
         Ok(Completion::AlreadyCompleted)
     );
     assert_eq!(
-        ledger.complete_with(pending, 0, at(9)),
+        unchanged(&mut ledger, |l| l.complete_with(pending, 0, at(9))),
         Ok(Completion::AlreadyCompleted)
     );
-    assert_eq!(ledger, before);
     assert_eq!(ledger.observed(), at(4));
 }
 
 #[test]
 fn a_refused_abandon_changes_nothing() {
     let (mut ledger, expired, pending, done) = busy();
-    let before = ledger.clone();
     let never = id(ledger.issued() + 1);
     let refused = [
         (never, Refusal::Stale),
@@ -136,15 +128,12 @@ fn a_refused_abandon_changes_nothing() {
         (done, Refusal::Concluded),
     ];
     for (claim, why) in refused {
-        assert_eq!(ledger.abandon(claim), Err(why));
-        assert_eq!(ledger, before, "{why:?} changed the ledger");
+        refuses(&mut ledger, why, |l| l.abandon(claim));
     }
     assert_eq!(ledger.abandon(pending), Ok(()));
     // A repeat is not provable: the slot is free and no history is kept.
-    let before = ledger.clone();
-    assert_eq!(ledger.abandon(pending), Err(Refusal::Stale));
-    assert_eq!(ledger.complete(pending, at(3)), Err(Refusal::Stale));
-    assert_eq!(ledger, before);
+    refuses(&mut ledger, Refusal::Stale, |l| l.abandon(pending));
+    refuses(&mut ledger, Refusal::Stale, |l| l.complete(pending, at(3)));
 }
 
 #[test]
@@ -167,13 +156,11 @@ fn abandon_reads_expiry_from_the_observed_clock() {
 fn a_refused_expiry_is_not_remembered() {
     let mut ledger = Dedup::<u64, 2, u8>::new();
     let id = acquired(ledger.claim(1, at(0), at(10)));
-    let before = ledger.clone();
     let refused = Refused {
         refusal: Refusal::Stale,
         value: 7,
     };
-    assert_eq!(ledger.complete_with(id, 7, at(10)), Err(refused));
-    assert_eq!(ledger, before);
+    refuses(&mut ledger, refused, |l| l.complete_with(id, 7, at(10)));
     assert_eq!(ledger.observed(), at(0));
     assert_eq!(
         ledger.complete_with(id, 7, at(5)),
@@ -190,10 +177,10 @@ fn a_refused_expiry_is_not_remembered() {
     let mut abandoning = ledger.clone();
     assert_eq!(abandoning.abandon(old), Ok(()));
     let fresh = acquired(ledger.claim(1, at(10), at(10)));
-    let before = ledger.clone();
-    assert_eq!(ledger.complete(old, at(5)), Err(Refusal::TimeRegression));
-    assert_eq!(ledger.complete(old, at(10)), Err(Refusal::Stale));
-    assert_eq!(ledger.abandon(old), Err(Refusal::Stale));
-    assert_eq!(ledger, before);
+    refuses(&mut ledger, Refusal::TimeRegression, |l| {
+        l.complete(old, at(5))
+    });
+    refuses(&mut ledger, Refusal::Stale, |l| l.complete(old, at(10)));
+    refuses(&mut ledger, Refusal::Stale, |l| l.abandon(old));
     assert_eq!(ledger.complete(fresh, at(10)), Ok(Completion::Completed));
 }

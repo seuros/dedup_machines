@@ -64,6 +64,38 @@ class SealTest < Minitest::Test
     assert_raises(RangeError) { Ledger.resumed([unissued], 0, 1, 0) }
   end
 
+  # A singleton class opened on a genuine value does not change what it is,
+  # a clone of one included, wherever the extension reads it back.
+  def test_an_opened_singleton_class_is_still_the_gems_value
+    ledger = Ledger.new
+    id = acquire(ledger, 1, 0, 10).tap(&:singleton_class)
+    assert_equal Acquired.new(id), Acquired.new(id.clone)
+    assert_equal :completed, ledger.complete(id.clone, 1)
+    assert_instance_of Acquired, ledger.admit(Attempt.new(2, nil, nil).tap(&:singleton_class), 1, 10)
+    entries = ledger.entries.map { _1.clone.tap(&:singleton_class) }
+    assert_equal ledger.entries, Ledger.resumed(entries, 0, ledger.issued, 1).entries
+  end
+
+  # The extension reads every value's fields from the struct, never through
+  # its readers: a redefined reader is ignored, and cannot re-enter.
+  def test_a_redefined_reader_is_ignored
+    ledger = Ledger.new
+    id = acquire(ledger, 1, 0, 10)
+    attempt = Attempt.new(2, 7, nil)
+    readers = { ClaimId => %i[raw], Attempt => %i[key fingerprint], Entry => %i[key claim expires] }
+    originals = readers.flat_map { |klass, names| names.map { [klass, it, klass.instance_method(it)] } }
+    begin
+      originals.each { |klass, name, _| klass.define_method(name) { raise "#{name} reader ran" } }
+      assert_equal :completed, ledger.complete(id, 1)
+      assert_equal :in_progress, ledger.admit(attempt, 1, 10).then { ledger.admit(attempt, 1, 10) }
+      saved = ledger.entries
+      restored = Ledger.resumed(saved, 0, ledger.issued, 1)
+    ensure
+      originals.each { |klass, name, reader| klass.define_method(name, reader) }
+    end
+    assert_equal ledger.entries, restored.entries
+  end
+
   # The classes the extension resolved at init are pinned: after a
   # compaction that moves what it can, every path that builds or reads a
   # value still finds them.

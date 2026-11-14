@@ -1,6 +1,7 @@
 //! Claim ids carry the scope of the ledger that issued them.
 
 use super::*;
+use matryona_machines::testing::refuses;
 use periscope_machines::scoped;
 
 use crate::test_support::{holds_the_storage_contract, record};
@@ -43,18 +44,15 @@ fn a_claim_from_another_ledger_settles_nothing() {
         (&mut far, near_pending, near_done),
     ];
     for (ledger, pending, done) in foreign {
-        let before = ledger.clone();
-        assert_eq!(ledger.complete(pending, at(1)), Err(Refusal::Stale));
-        assert_eq!(ledger.abandon(pending), Err(Refusal::Stale));
+        refuses(ledger, Refusal::Stale, |l| l.complete(pending, at(1)));
+        refuses(ledger, Refusal::Stale, |l| l.abandon(pending));
         // Nor is a repeat honoured: the completed claim here is not that one.
-        assert_eq!(ledger.complete(done, at(1)), Err(Refusal::Stale));
-        assert_eq!(ledger.abandon(done), Err(Refusal::Stale));
+        refuses(ledger, Refusal::Stale, |l| l.complete(done, at(1)));
+        refuses(ledger, Refusal::Stale, |l| l.abandon(done));
         // Refused before the clock is read.
-        assert_eq!(
-            ledger.complete(pending, Duration::ZERO),
-            Err(Refusal::Stale)
-        );
-        assert_eq!(*ledger, before);
+        refuses(ledger, Refusal::Stale, |l| {
+            l.complete(pending, Duration::ZERO)
+        });
     }
     assert_eq!(
         near.complete(near_pending, at(1)),

@@ -5,6 +5,7 @@ use crate::test_support::{
     acquired, an_unwinding_predicate_drops_nothing, at, holds_the_storage_contract,
 };
 use crate::{Claim, Completion, Refusal, Refused};
+use matryona_machines::testing::refuses;
 
 #[test]
 fn owned_keys_follow_the_fixed_lifecycle() {
@@ -50,9 +51,9 @@ fn freed_slots_are_reused_without_resurrecting_handles() {
     assert_eq!(ledger.abandon(first), Err(Refusal::Stale));
     assert_eq!(ledger.complete(third, at(1)), Ok(Completion::Completed));
     assert_eq!(ledger.complete(second, at(1)), Ok(Completion::Completed));
-    let before = ledger.clone();
-    assert_eq!(ledger.claim(1, at(1), at(10)), Err(Refusal::Full));
-    assert_eq!(ledger, before);
+    refuses(&mut ledger, Refusal::Full, |l| {
+        l.claim(1, at(1), at(10)).map(drop)
+    });
     assert_eq!(ledger.claim(3, at(1), at(10)), Ok(Claim::Completed(&())));
     acquired(ledger.claim(1, at(10), at(10)));
     assert_eq!(ledger.store().slots.len(), 2);

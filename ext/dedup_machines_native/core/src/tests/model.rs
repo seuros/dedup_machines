@@ -11,7 +11,8 @@ use std::vec::Vec;
 use periscope_machines::{scope_of, scoped, sequence_of};
 
 use super::*;
-use crate::test_support::Rng;
+use crate::test_support::pick;
+use matryona_machines::testing::SplitMix64;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Row {
@@ -181,46 +182,46 @@ fn live<S: Storage<Key = u64, Value = u8>>(ledger: &Ledger<S>) -> Vec<Row> {
 struct Run<S> {
     ledger: Ledger<S>,
     model: Model,
-    rng: Rng,
+    rng: SplitMix64,
     /// Every id handed out so far, live or not.
     handed: Vec<u64>,
 }
 
 impl<S: Storage<Key = u64, Value = u8> + Clone + PartialEq + Debug> Run<S> {
     fn now(&mut self) -> u64 {
-        match self.rng.next(8) {
-            0 => self.model.observed.saturating_sub(1 + self.rng.next(3)),
+        match self.rng.below(8) {
+            0 => self.model.observed.saturating_sub(1 + self.rng.below(3)),
             1..=4 => self.model.observed,
-            _ => self.model.observed + 1 + self.rng.next(4),
+            _ => self.model.observed + 1 + self.rng.below(4),
         }
     }
 
     /// A handed-out id, a forged one, or one from another scope.
     fn named(&mut self, seen: &mut Seen) -> u64 {
         // A sequence of zero builds no `ClaimId` at all.
-        let guess = scoped(self.model.scope, 1 + self.rng.next(self.model.issued + 2));
-        let named = match (self.rng.next(8), self.handed.len()) {
+        let guess = scoped(self.model.scope, 1 + self.rng.below(self.model.issued + 2));
+        let named = match (self.rng.below(8), self.handed.len()) {
             (0, _) | (_, 0) => guess,
-            (_, held) => self.handed[held - 1 - self.rng.pick(held.min(4))],
+            (_, held) => self.handed[held - 1 - pick(&mut self.rng, held.min(4))],
         };
-        if self.rng.next(8) == 0 {
+        if self.rng.below(8) == 0 {
             seen.foreign += 1;
             // Flipping a low scope bit always lands in another scope.
-            return named ^ scoped(1 + u16::try_from(self.rng.next(3)).unwrap_or(0), 0);
+            return named ^ scoped(1 + u16::try_from(self.rng.below(3)).unwrap_or(0), 0);
         }
         named
     }
 
     fn admit(&mut self, seen: &mut Seen) {
         let attempt = Row {
-            key: self.rng.next(6),
-            fingerprint: [None, None, Some(1), Some(2)][self.rng.pick(4)],
-            partition: [None, Some(1), Some(2)][self.rng.pick(3)],
+            key: self.rng.below(6),
+            fingerprint: [None, None, Some(1), Some(2)][pick(&mut self.rng, 4)],
+            partition: [None, Some(1), Some(2)][pick(&mut self.rng, 3)],
             claim: 0,
             expires: 0,
             value: None,
         };
-        let (now, ttl) = (self.now(), self.rng.next(6));
+        let (now, ttl) = (self.now(), self.rng.below(6));
         let mut asked = Attempt::new(attempt.key);
         asked.fingerprint = attempt.fingerprint;
         asked.partition = attempt.partition;
@@ -259,7 +260,7 @@ impl<S: Storage<Key = u64, Value = u8> + Clone + PartialEq + Debug> Run<S> {
     }
 
     fn complete(&mut self, seen: &mut Seen) {
-        let (claim, value, now) = (self.named(seen), self.rng.next(2), self.now());
+        let (claim, value, now) = (self.named(seen), self.rng.below(2), self.now());
         let value = u8::try_from(value).unwrap_or(0);
         let before = self.ledger.clone();
         let got = self.ledger.complete_with(id(claim), value, at(now));
@@ -293,7 +294,7 @@ impl<S: Storage<Key = u64, Value = u8> + Clone + PartialEq + Debug> Run<S> {
     }
 
     fn drain(&mut self, seen: &mut Seen) {
-        let odd = self.rng.next(2);
+        let odd = self.rng.below(2);
         let dropped = self.ledger.expire_where(|key| key % 2 == odd);
         assert_eq!(dropped, self.model.expire_where(|key| key % 2 == odd));
         seen.dropped += dropped;
@@ -336,11 +337,11 @@ where
                 issued: 0,
                 observed: 0,
             },
-            rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
+            rng: SplitMix64::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             handed: Vec::new(),
         };
         for _ in 0..400 {
-            match run.rng.next(16) {
+            match run.rng.below(16) {
                 0..=6 => run.admit(&mut seen),
                 7..=10 => run.complete(&mut seen),
                 11..=13 => run.abandon(&mut seen),

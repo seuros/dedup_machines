@@ -162,6 +162,28 @@ class LedgerTest < Minitest::Test
     refute_predicate ledger.with_partition_cap(1), :frozen?
   end
 
+  # Frozen is checked before any argument is read: a frozen ledger handed a
+  # malformed argument raises FrozenError, as Ruby's own core methods do.
+  def test_frozen_is_checked_before_the_arguments
+    ledger = Ledger.new.freeze
+    assert_raises(FrozenError) { ledger.claim(1.5, 0, 10) }
+    assert_raises(FrozenError) { ledger.claim_with(1, nil, 0, 10) }
+    assert_raises(FrozenError) { ledger.admit(:attempt, 0, 10) }
+    assert_raises(FrozenError) { ledger.complete(nil, 0) }
+    assert_raises(FrozenError) { ledger.complete_with(1, -1, 0) }
+    assert_raises(FrozenError) { ledger.abandon('id') }
+  end
+
+  # Entries are read natively from exactly an Array: a subclass, whose
+  # iteration it could redefine, is a TypeError.
+  def test_resumed_entries_must_be_exactly_an_array
+    ledger = Ledger.new
+    acquire(ledger, 1, 0, 10)
+    subclass = Class.new(Array)
+    assert_raises(TypeError) { Ledger.resumed(subclass.new(ledger.entries), 0, ledger.issued, 0) }
+    assert_equal ledger.entries, Ledger.resumed(ledger.entries, 0, ledger.issued, 0).entries
+  end
+
   def test_gc_stress_and_duration_upper_bound
     previous = GC.stress
     GC.stress = true

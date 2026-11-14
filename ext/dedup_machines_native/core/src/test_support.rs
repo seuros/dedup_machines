@@ -5,6 +5,8 @@ use core::time::Duration;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use matryona_machines::testing::SplitMix64;
+
 use crate::{Claim, ClaimId, Entry, Ledger, Refusal, Storage};
 
 pub fn at(seconds: u64) -> Duration {
@@ -18,21 +20,9 @@ pub fn acquired<V: Debug>(claim: Result<Claim<'_, V>, Refusal>) -> ClaimId {
     }
 }
 
-/// Deterministic generator for the randomized runs.
-pub struct Rng(pub u64);
-
-impl Rng {
-    pub fn next(&mut self, bound: u64) -> u64 {
-        self.0 = self
-            .0
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        (self.0 >> 33) % bound
-    }
-
-    pub fn pick(&mut self, bound: usize) -> usize {
-        usize::try_from(self.next(bound as u64)).unwrap_or(0)
-    }
+/// A draw in `0..bound`, as an index.
+pub fn pick(rng: &mut SplitMix64, bound: usize) -> usize {
+    usize::try_from(rng.below(bound as u64)).unwrap_or(0)
 }
 
 /// A claim id from its integer form; panics on a sequence of zero.

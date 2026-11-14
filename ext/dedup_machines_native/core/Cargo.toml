@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Bounded exact duplicate claims with generation-checked completion"
 readme = "README.md"
-exclude = ["src/**/tests.rs", "src/tests/", "tests/"]
+exclude = ["src/**/tests.rs", "src/tests/", "src/test_support.rs", "tests/"]
 keywords = ["deduplication", "idempotency", "ttl", "exactly-once", "no-std"]
 categories = ["no-std", "algorithms"]
 [features]
@@ -17,6 +17,9 @@ std = ["alloc"]
 [dependencies]
 periscope-machines.workspace = true
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"], optional = true }
+
+[dev-dependencies]
+matryona-machines = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true
