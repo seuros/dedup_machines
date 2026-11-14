@@ -7,7 +7,9 @@ use std::{cell::RefCell, time::Duration};
 
 use dedup_machines::{Attempt, Claim, ClaimId, Completion, Dedup, Fixed, Refusal, Storage};
 use magnus::{Error, Integer, RArray, Ruby, Value, prelude::*, typed_data::Obj};
-use matryona_machines::ruby::{Symbols, duration, exact_array, integer, keep, nanoseconds, symbol};
+use matryona_machines::ruby::{
+    Symbols, duration, exact_array, integer, integer_in, keep, nanoseconds, symbol,
+};
 
 use classes::classes;
 use convert::{Refusals, Stored};
@@ -62,12 +64,10 @@ impl Ledger {
         observed: Value,
     ) -> Result<Self, Error> {
         let entries = exact_array(ruby, entries, "entries must be an Array of Entry")?;
-        let (scope, issued) = (integer(scope, "scope")?, integer(issued, "issued")?);
+        let scope = integer(scope, "scope")?;
+        let issued = integer_in(issued, "issued", 0..=periscope_machines::SEQUENCE_MAX)?;
         let observed = duration(observed, "observed")?;
         let range = |message| Error::new(ruby.exception_range_error(), message);
-        if issued > periscope_machines::SEQUENCE_MAX {
-            return Err(range("issued must be in 0..2**48-1"));
-        }
         let mut store = Fixed::new();
         for value in entries {
             let entry = convert::entry(ruby, value)?;

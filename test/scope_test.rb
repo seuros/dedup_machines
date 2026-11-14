@@ -101,7 +101,10 @@ class ScopeTest < Minitest::Test
     assert_raises(TypeError) { Ledger.resumed([entry], 0, 1.0, 0) }
     assert_raises(RangeError) { Ledger.resumed([entry.with(expires: -1)], 0, 1, 0) }
     assert_raises(RangeError) { Ledger.resumed([entry.with(expires: 2**100)], 0, 1, 0) }
-    assert_raises(RangeError) { Ledger.resumed([entry], 0, 2**48, 0) }
+    [2**48, -1, 2**64].each do |issued|
+      error = assert_raises(RangeError) { Ledger.resumed([entry], 0, issued, 0) }
+      assert_equal 'issued must be in 0..=281474976710655', error.message
+    end
     assert_raises(RangeError) { Ledger.resumed([entry], 65_536, 1, 0) }
     many = 65.times.map { |i| Entry.new(i, nil, nil, ClaimId.new(i + 1), 10, nil) }
     assert_raises(RangeError) { Ledger.resumed(many, 0, 65, 0) }
