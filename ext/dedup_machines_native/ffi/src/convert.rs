@@ -2,7 +2,7 @@
 use dedup_machines::{ClaimId, Refusal};
 use magnus::{Error, Ruby, Value, prelude::*};
 use matryona_machines::ruby::{
-    exact_array_n, exact_fields, instant, integer, nanoseconds, optional,
+    exact_array_n_with, exact_fields, instant, integer, nanoseconds, optional,
 };
 
 use crate::classes::{Classes, classes};
@@ -65,7 +65,7 @@ pub fn check_entry(ruby: &Ruby, fields: Value) -> Result<(), Error> {
 
 /// The `N` fields a value's `new` hands its hook, exactly an `Array` of `N`.
 fn row<const N: usize>(ruby: &Ruby, fields: Value) -> Result<[Value; N], Error> {
-    exact_array_n::<N>(ruby, fields, format!("fields must be an Array of {N}"))
+    exact_array_n_with::<N>(ruby, fields, || format!("fields must be an Array of {N}"))
 }
 
 /// A Ruby `ClaimId` for a core id.
