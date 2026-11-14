@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.5.0...dedup_machines/v0.6.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt matryona 0.3: read resumed issued with integer_in
+
+### Features
+
+* adopt matryona 0.3: read resumed issued with integer_in ([9788d9e](https://github.com/seuros/dedup_machines/commit/9788d9e948e35314f5caaa23606128e9a325e798))
+
 ## [0.5.0](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.4.0...dedup_machines/v0.5.0) (2026-11-14)
 
 
