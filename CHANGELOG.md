@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.3.0...dedup_machines/v0.4.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* read claim ids, attempts and entries by exact class, clone-then-keep claims, expire_where asks before dropping
+
+### Features
+
+* read claim ids, attempts and entries by exact class, clone-then-keep claims, expire_where asks before dropping ([90e8ba3](https://github.com/seuros/dedup_machines/commit/90e8ba30efad662f6757033ea49e03cad78c5a7d))
+
 ## [0.3.0](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.2.2...dedup_machines/v0.3.0) (2026-11-13)
 
 
