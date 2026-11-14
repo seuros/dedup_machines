@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.6.0...dedup-machines-v0.7.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt matryona-machines 0.2: shared converters, exact field reads, compiler-checked refusals; keep test support out of the crate
+
+### Features
+
+* adopt matryona-machines 0.2: shared converters, exact field reads, compiler-checked refusals; keep test support out of the crate ([2705acb](https://github.com/seuros/dedup_machines/commit/2705acbe855e1a9828c6cbfa28f71207e37e91a5))
+
 ## [0.6.0](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.5.0...dedup-machines-v0.6.0) (2026-11-14)
 
 
