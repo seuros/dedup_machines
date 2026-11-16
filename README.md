@@ -301,7 +301,7 @@ What each refusal means:
 | --- | --- |
 | `:time_regression` | `now` is earlier than the latest instant the ledger observed |
 | `:invalid_duration` | the ttl is zero |
-| `:overflow` | `now + ttl` doesn't fit; unreachable from Integer nanoseconds below 2**64 |
+| `:overflow` | `now + ttl` doesn't fit a `Duration` |
 | `:exhausted` | the ledger has issued all 2**48 - 1 claim ids of its scope |
 | `:conflict` | the key is live under a different fingerprint |
 | `:full` | all 64 slots hold a live record |
@@ -312,7 +312,7 @@ What each refusal means:
 
 ## The Rules of the Courier
 
-- **Keys, fingerprints, partitions and values are Integers** in `0..2**64-1`. Instants and ttls are Integer nanoseconds in the same range. Floats, nil, and strings raise `TypeError`. Out of range raises `RangeError`.
+- **Keys, fingerprints, partitions and values are Integers** in `0..2**64-1`. Ttls are Integer nanoseconds in the same range. Instants (`now`, `observed`, `expires`) run over the whole Rust `Duration` range, `0..Duration::MAX` nanoseconds (about `1.8e28`), so every `expires` the ledger answers, `now + ttl` past `2**64` included, reads back as `now`. Floats, nil, and strings raise `TypeError`. Out of range raises `RangeError`.
 - **Answers are not refusals.** `:in_progress` and `Completed` are the ledger doing its job for a duplicate. They record `now` and change nothing else. An `Acquired` records `now`, clears out expired records and stores yours.
 - **Refusals don't raise, and change nothing.** Only malformed input raises.
 - **A refusal about time is about the instant you gave.** `:stale` for an expired claim and `:time_regression` record nothing; the same call at another instant may be honoured. Only honoured calls move the clock.

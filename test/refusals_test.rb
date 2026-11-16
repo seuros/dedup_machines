@@ -96,10 +96,24 @@ class RefusalsTest < Minitest::Test
     assert_unchanged(ledger) { assert_equal :exhausted, ledger.claim(1, 2, 9) }
   end
 
-  def test_every_refusal_symbol_is_reachable_but_overflow
-    # `now + ttl` cannot overflow a Duration from Integer nanoseconds below
-    # 2**64: :overflow is the one refusal Ruby cannot reach.
+  def test_overflow_changes_nothing
+    ledger, = busy
+    assert_unchanged(ledger) { assert_equal :overflow, ledger.claim(5, DURATION_MAX, 1) }
+  end
+
+  # Bug: the ledger answered an `expires` past 2**64-1 that its own `now`
+  # readers then refused, raising RangeError.
+  def test_every_expires_reads_back_as_now
     ledger = Ledger.new
-    assert_instance_of Acquired, ledger.claim(1, 2**64 - 1, 2**64 - 1)
+    id = acquire(ledger, 1, (2**64) - 1, 1)
+    expires = ledger.entries.first.expires
+    assert_equal 2**64, expires
+    assert_equal :stale, ledger.complete(id, expires)
+    assert_instance_of Acquired, ledger.claim(1, expires, 1)
+    assert_equal expires, ledger.observed
+    resumed = Ledger.resumed(ledger.entries, ledger.scope, ledger.issued, ledger.observed)
+    assert_equal state(ledger), state(resumed)
+    [-1, DURATION_MAX + 1].each { |bad| assert_raises(RangeError) { ledger.claim(2, bad, 1) } }
+    assert_raises(RangeError) { ledger.claim(2, expires, 2**64) }
   end
 end

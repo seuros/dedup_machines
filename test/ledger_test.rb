@@ -139,9 +139,14 @@ class LedgerTest < Minitest::Test
       assert_raises(TypeError) { ledger.abandon(id.raw) }
       [-1, 2**64].each do |n|
         assert_raises(RangeError) { ledger.claim(n, 10, 10) }
-        assert_raises(RangeError) { ledger.claim(2, n, 10) }
+        assert_raises(RangeError) { ledger.claim(2, 10, n) }
         assert_raises(RangeError) { ledger.complete_with(id, n, 10) }
         assert_raises(RangeError) { ledger.abandon(ClaimId.new(n)) }
+      end
+      [-1, DURATION_MAX + 1].each do |n|
+        assert_raises(RangeError) { ledger.claim(2, n, 10) }
+        assert_raises(RangeError) { ledger.complete(id, n) }
+        assert_raises(RangeError) { Ledger.resumed([], 0, 0, n) }
       end
     end
   end

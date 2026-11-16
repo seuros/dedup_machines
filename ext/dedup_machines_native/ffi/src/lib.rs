@@ -8,7 +8,7 @@ use std::{cell::RefCell, time::Duration};
 use dedup_machines::{Attempt, Claim, ClaimId, Completion, Dedup, Fixed, Refusal, Storage};
 use magnus::{Error, Integer, RArray, Ruby, Value, prelude::*, typed_data::Obj};
 use matryona_machines::ruby::{
-    Symbols, duration, exact_array, integer, integer_in, keep, nanoseconds,
+    Symbols, duration, exact_array, instant, integer, integer_in, keep, nanoseconds,
 };
 
 use classes::classes;
@@ -66,7 +66,7 @@ impl Ledger {
         let entries = exact_array(ruby, entries, "entries must be an Array of Entry")?;
         let scope = integer(scope, "scope")?;
         let issued = integer_in(issued, "issued", 0..=periscope_machines::SEQUENCE_MAX)?;
-        let observed = duration(observed, "observed")?;
+        let observed = instant(observed, "observed")?;
         let range = |message| Error::new(ruby.exception_range_error(), message);
         let mut store = Fixed::new();
         for value in entries {
@@ -144,7 +144,7 @@ impl Ledger {
     ) -> Result<Value, Error> {
         this.check_frozen()?;
         let key = integer(key, "key")?;
-        let (now, ttl) = (duration(now, "now")?, duration(ttl, "ttl")?);
+        let (now, ttl) = (instant(now, "now")?, duration(ttl, "ttl")?);
         Self::ask(ruby, this, Attempt::new(key), now, ttl)
     }
 
@@ -158,7 +158,7 @@ impl Ledger {
     ) -> Result<Value, Error> {
         this.check_frozen()?;
         let (key, fingerprint) = (integer(key, "key")?, integer(fingerprint, "fingerprint")?);
-        let (now, ttl) = (duration(now, "now")?, duration(ttl, "ttl")?);
+        let (now, ttl) = (instant(now, "now")?, duration(ttl, "ttl")?);
         let attempt = Attempt::new(key).fingerprint(fingerprint);
         Self::ask(ruby, this, attempt, now, ttl)
     }
@@ -172,7 +172,7 @@ impl Ledger {
     ) -> Result<Value, Error> {
         this.check_frozen()?;
         let attempt = convert::attempt(ruby, attempt)?;
-        let (now, ttl) = (duration(now, "now")?, duration(ttl, "ttl")?);
+        let (now, ttl) = (instant(now, "now")?, duration(ttl, "ttl")?);
         Self::ask(ruby, this, attempt, now, ttl)
     }
 
@@ -218,7 +218,7 @@ impl Ledger {
 
     fn complete(ruby: &Ruby, this: Obj<Self>, claim: Value, now: Value) -> Result<Value, Error> {
         let claim = Self::settling(ruby, this, claim)?;
-        let now = duration(now, "now")?;
+        let now = instant(now, "now")?;
         let outcome = this.core.borrow_mut().complete(claim, now);
         Ok(Self::completion(ruby, outcome))
     }
@@ -233,7 +233,7 @@ impl Ledger {
         now: Value,
     ) -> Result<Value, Error> {
         let claim = Self::settling(ruby, this, claim)?;
-        let (value, now) = (integer(value, "value")?, duration(now, "now")?);
+        let (value, now) = (integer(value, "value")?, instant(now, "now")?);
         let mut core = this.core.borrow_mut();
         let outcome = core.complete_with(claim, value, now);
         Ok(Self::completion(ruby, outcome.map_err(|back| back.refusal)))

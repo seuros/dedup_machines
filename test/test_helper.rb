@@ -5,6 +5,9 @@ require 'dedup_machines'
 module LedgerHelpers
   include DedupMachines
 
+  # The latest instant a ledger reads: Rust's `Duration::MAX`, in nanoseconds.
+  DURATION_MAX = ((2**64) - 1) * 1_000_000_000 + 999_999_999
+
   # Everything a ledger holds: a refused call must leave it unchanged.
   def state(ledger)
     [ledger.entries, ledger.scope, ledger.issued, ledger.observed, ledger.partition_cap]

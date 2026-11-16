@@ -83,7 +83,10 @@ module DedupMachines
     # Keys, fingerprints, partitions and values are Integers in 0..2**64-1.
     # Every instant (`now`, `observed`, `expires`) and every span (`ttl`) is
     # Integer nanoseconds of the caller's monotonic clock. A non-Integer raises
-    # TypeError; negative or past 2**64-1 raises RangeError. A frozen ledger
+    # TypeError. A span is in 0..2**64-1; an instant is read over the whole
+    # `Duration` range, 0..Duration::MAX nanoseconds, so every `expires` the
+    # ledger answers (`now + ttl`, past 2**64-1 included) reads back as `now`.
+    # Outside its range either raises RangeError. A frozen ledger
     # raises FrozenError on every mutating call.
 
     # An empty ledger in scope zero.
