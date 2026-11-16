@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.7.0...dedup-machines-v0.8.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* Storage gains Marks; expire_where never runs code in a backend
+
+### Features
+
+* Storage gains Marks; expire_where never runs code in a backend ([5e115e8](https://github.com/seuros/dedup_machines/commit/5e115e8e43a3d1de0f13f8d4d3e4865724ec7a8b))
+
 ## [0.7.0](https://github.com/seuros/dedup_machines/compare/dedup-machines-v0.6.0...dedup-machines-v0.7.0) (2026-11-14)
 
 

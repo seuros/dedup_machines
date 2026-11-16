@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "dedup-machines"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hashbrown",
  "matryona-machines",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "dedup_machines_native"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "dedup-machines",
  "magnus",
