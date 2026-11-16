@@ -1,6 +1,7 @@
 //! Private native entry point.
 use crate::{CAPACITY, Ledger, convert};
 use magnus::{Error, Ruby, function, method, prelude::*};
+use matryona_machines::ruby::Class;
 
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
@@ -33,5 +34,6 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     class.define_method("complete_with", method!(Ledger::complete_with, 3))?;
     class.define_method("abandon", method!(Ledger::abandon, 1))?;
     class.define_method("expire_where", method!(Ledger::expire_where, 0))?;
-    Ok(())
+    // Fix magnus's class for Ledger now: building one later runs no Ruby.
+    Class::pin_wrapped::<Ledger>(ruby, class).map(drop)
 }
