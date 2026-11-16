@@ -6,8 +6,12 @@ Gem::Specification.new do |spec|
   spec.version = DedupMachines::VERSION
   spec.authors = ['Abdelkader Boudih']
   spec.email = ['oss@seuros.com']
-  spec.summary = 'Initial bounded exact claim policies with a native Rust core'
-  spec.description = 'Local unstable exact deduplication ledger; not durable or exactly-once delivery.'
+  spec.summary = 'Idempotency keys and duplicate-message claims for Ruby'
+  spec.description = 'A bounded claim ledger: claim a key before acting on a message, and the next copy ' \
+                     'learns it is in progress or already done instead of causing a second side effect. ' \
+                     'Claim ids are checked on completion, records expire by TTL, and a full ledger ' \
+                     'refuses new keys instead of evicting. Bound to Ruby from the no_std ' \
+                     'dedup-machines crate: in memory, not durable storage or exactly-once delivery.'
   spec.homepage = 'https://github.com/seuros/dedup_machines'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 4.0.0'

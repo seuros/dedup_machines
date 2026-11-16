@@ -13,10 +13,14 @@ use crate::{ClaimId, Entry};
 ///
 /// The ledger's guarantee that a refusal changes nothing rests on two rules:
 /// an `insert` that answers `None` stored nothing, and an `insert` right
-/// after a `retain` that dropped a record finds room. Its guarantee that
-/// [`Ledger::expire_where`](crate::Ledger::expire_where) drops nothing when
-/// the caller's predicate unwinds rests on a third: `retain` asks about every
-/// record before it drops any.
+/// after a `retain` that dropped a record finds room.
+///
+/// The caller's code never runs inside a backend call.
+/// [`Ledger::expire_where`](crate::Ledger::expire_where) asks its predicate
+/// about every record first, over `iter`, noting each verdict in
+/// [`Storage::marks`], and only then drops through `retain`. So a backend's
+/// `retain` may drop each record as soon as `keep` rejects it: the ledger's
+/// `keep` reads only the record, the slot and the marks, and never unwinds.
 ///
 /// No two held records share a key or a claim id. A ledger never asks for
 /// that; [`Fixed`] and [`Hashed`](crate::Hashed) refuse an `insert` that
@@ -27,6 +31,9 @@ pub trait Storage {
     type Key: Eq;
     /// Value stored on completion.
     type Value;
+    /// The verdict buffer [`Storage::marks`] hands out: `[bool; N]` for `N`
+    /// slots numbered from zero, `Vec<bool>` with the `alloc` feature.
+    type Marks: Marks;
 
     /// The record at `slot`, if one is held.
     fn get(&self, slot: usize) -> Option<&Entry<Self::Key, Self::Value>>;
@@ -49,13 +56,55 @@ pub trait Storage {
     fn insert(&mut self, entry: Entry<Self::Key, Self::Value>) -> Option<usize>;
     /// Drop the record at `slot`; `false` when there was none.
     fn remove(&mut self, slot: usize) -> bool;
-    /// Drop every record `keep` rejects, returning how many were dropped.
-    ///
-    /// Ask-then-drop: `keep` sees every record before any is dropped, so a
-    /// `keep` that unwinds leaves the backend as it was.
-    fn retain(&mut self, keep: impl FnMut(&Entry<Self::Key, Self::Value>) -> bool) -> usize;
+    /// Drop every record `keep` rejects, given its slot, returning how many
+    /// were dropped. `keep` is the ledger's own and runs no caller code.
+    fn retain(&mut self, keep: impl FnMut(usize, &Entry<Self::Key, Self::Value>) -> bool) -> usize;
+    /// One clear mark for every slot `iter` can report, where
+    /// [`Ledger::expire_where`](crate::Ledger::expire_where) notes its
+    /// verdicts before dropping anything. A slot the marks cannot hold is
+    /// never dropped by it.
+    fn marks(&self) -> Self::Marks;
     /// Every record held with the slot holding it, in no particular order.
     fn iter(&self) -> impl Iterator<Item = (usize, &Entry<Self::Key, Self::Value>)>;
+}
+
+/// One mark per slot of a [`Storage`]; see [`Storage::marks`].
+pub trait Marks {
+    /// Mark `slot`; `false`, marking nothing, when there is no mark for it.
+    fn mark(&mut self, slot: usize) -> bool;
+    /// Whether `slot` is marked; `false` for a slot there is no mark for.
+    fn marked(&self, slot: usize) -> bool;
+}
+
+impl Marks for [bool] {
+    fn mark(&mut self, slot: usize) -> bool {
+        self.get_mut(slot).map(|mark| *mark = true).is_some()
+    }
+
+    fn marked(&self, slot: usize) -> bool {
+        self.get(slot).copied().unwrap_or(false)
+    }
+}
+
+impl<const N: usize> Marks for [bool; N] {
+    fn mark(&mut self, slot: usize) -> bool {
+        self.as_mut_slice().mark(slot)
+    }
+
+    fn marked(&self, slot: usize) -> bool {
+        self.as_slice().marked(slot)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl Marks for alloc::vec::Vec<bool> {
+    fn mark(&mut self, slot: usize) -> bool {
+        self.as_mut_slice().mark(slot)
+    }
+
+    fn marked(&self, slot: usize) -> bool {
+        self.as_slice().marked(slot)
+    }
 }
 
 /// Fixed-capacity inline storage.
@@ -83,6 +132,7 @@ impl<K, V, const N: usize> Default for Fixed<K, V, N> {
 impl<K: Eq, V, const N: usize> Storage for Fixed<K, V, N> {
     type Key = K;
     type Value = V;
+    type Marks = [bool; N];
 
     fn get(&self, slot: usize) -> Option<&Entry<K, V>> {
         slots::get(&self.entries, slot)
@@ -111,8 +161,12 @@ impl<K: Eq, V, const N: usize> Storage for Fixed<K, V, N> {
         slots::remove(&mut self.entries, slot)
     }
 
-    fn retain(&mut self, keep: impl FnMut(&Entry<K, V>) -> bool) -> usize {
+    fn retain(&mut self, keep: impl FnMut(usize, &Entry<K, V>) -> bool) -> usize {
         slots::retain(&mut self.entries, keep)
+    }
+
+    fn marks(&self) -> [bool; N] {
+        [false; N]
     }
 
     fn iter(&self) -> impl Iterator<Item = (usize, &Entry<K, V>)> {
@@ -152,8 +206,11 @@ pub mod slots {
 
     /// Store `entry` in the first free slot; nothing is checked.
     pub fn insert<K, V>(entries: &mut [Option<Entry<K, V>>], entry: Entry<K, V>) -> Option<usize> {
-        let slot = entries.iter().position(Option::is_none)?;
-        entries[slot] = Some(entry);
+        let (slot, free) = entries
+            .iter_mut()
+            .enumerate()
+            .find(|(_, held)| held.is_none())?;
+        *free = Some(entry);
         Some(slot)
     }
 
@@ -161,20 +218,15 @@ pub mod slots {
         entries.get_mut(slot).and_then(Option::take).is_some()
     }
 
-    /// Ask-then-drop: every verdict lands in a fixed buffer of `N` marks
-    /// before the first record is dropped. No allocation.
-    pub fn retain<K, V, const N: usize>(
-        entries: &mut [Option<Entry<K, V>>; N],
-        mut keep: impl FnMut(&Entry<K, V>) -> bool,
+    /// Drop each record as soon as `keep` rejects it.
+    pub fn retain<K, V>(
+        entries: &mut [Option<Entry<K, V>>],
+        mut keep: impl FnMut(usize, &Entry<K, V>) -> bool,
     ) -> usize {
-        let mut doomed = [false; N];
-        for (mark, entry) in doomed.iter_mut().zip(entries.iter()) {
-            *mark = entry.as_ref().is_some_and(|entry| !keep(entry));
-        }
         let mut removed = 0;
-        for (mark, entry) in doomed.into_iter().zip(entries.iter_mut()) {
-            if mark {
-                *entry = None;
+        for (slot, held) in entries.iter_mut().enumerate() {
+            if held.as_ref().is_some_and(|entry| !keep(slot, entry)) {
+                *held = None;
                 removed += 1;
             }
         }

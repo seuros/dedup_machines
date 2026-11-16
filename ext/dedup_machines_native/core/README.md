@@ -115,9 +115,10 @@ that are honoured and need it:
   clock reaches its expiry. It removes that one record.
 - `expire_where` removes the records it was asked to drop and those that
   expired by the observed clock; it counts only the former and never shows an
-  expired record to the predicate. It asks the predicate about every live key
-  before dropping any (the `Storage::retain` contract), so a predicate that
-  unwinds drops nothing. A binding whose predicate calls back into the ledger
+  expired record to the predicate. It asks the predicate about every live key,
+  noting the verdicts in `Storage::marks`, before dropping any, and never runs
+  it inside a backend call, so a predicate that unwinds drops nothing whatever
+  the backend. A binding whose predicate calls back into the ledger
   asks about `store()` first and passes the verdicts in (the Ruby gem does).
 - No refusal removes an expired record. `Full` means every slot holds a *live*
   record at `now`.
@@ -200,6 +201,13 @@ slots (`iter`). `Entry::new` and its accessors round-trip every field. Two
 rules keep refusals free of side effects: an `insert` that answers `None`
 stored nothing, and an `insert` right after a `retain` that dropped a record
 finds room.
+
+Your code never runs inside a backend call. `expire_where` asks its predicate
+over `iter` first and notes each verdict in the buffer `Storage::marks` hands
+out (`[bool; N]` for slots `0..N`, `Vec<bool>` with `alloc`; implement `Marks`
+for sparse slot numbers), then drops through `retain`, whose `keep` reads only
+the record, the slot and the marks. So `retain` may drop each record as soon as
+`keep` rejects it. A slot the marks cannot hold is never dropped.
 
 A stored record changes in one way only: `Storage::complete` records the value
 on a pending record (`Entry::complete` does it for a backend of your own). Its

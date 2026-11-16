@@ -64,8 +64,10 @@ where
 }
 
 /// The defect: `expire_where` dropped records as it asked about them, so a
-/// predicate that unwound part-way left the earlier verdicts applied. Over
-/// `ledger`, empty and holding at least two records, nothing is dropped.
+/// predicate that unwound part-way left the earlier verdicts applied; later it
+/// ran the predicate inside `Storage::retain`, so a backend that drops as it
+/// asks (the test `Pair`) still dropped part. Over `ledger`, empty and holding
+/// at least two records, nothing is dropped.
 pub fn an_unwinding_predicate_drops_nothing<S>(mut ledger: Ledger<S>)
 where
     S: Storage<Key = u64> + Clone + PartialEq + Debug,

@@ -105,6 +105,7 @@ impl<K: Hash + Eq, V, H: BuildHasher> Hashed<K, V, H> {
 impl<K: Hash + Eq, V, H: BuildHasher> Storage for Hashed<K, V, H> {
     type Key = K;
     type Value = V;
+    type Marks = Vec<bool>;
 
     fn get(&self, slot: usize) -> Option<&Entry<K, V>> {
         self.at(slot)
@@ -135,15 +136,16 @@ impl<K: Hash + Eq, V, H: BuildHasher> Storage for Hashed<K, V, H> {
             self.hasher.hash_one(&entry.key),
             self.hasher.hash_one(entry.claim),
         );
-        let slot = match self.free.pop() {
-            Some(slot) if slot < self.slots.len() => {
-                self.slots[slot] = Some(entry);
-                slot
-            }
-            Some(_) | None => {
-                self.slots.push(Some(entry));
-                self.slots.len() - 1
-            }
+        let reused = self
+            .free
+            .pop()
+            .and_then(|slot| Some((slot, self.slots.get_mut(slot)?)));
+        let slot = if let Some((slot, free)) = reused {
+            *free = Some(entry);
+            slot
+        } else {
+            self.slots.push(Some(entry));
+            self.slots.len() - 1
         };
         let (slots, hasher) = (&self.slots, &self.hasher);
         let held = |other: usize| slots.get(other).and_then(Option::as_ref);
@@ -160,14 +162,19 @@ impl<K: Hash + Eq, V, H: BuildHasher> Storage for Hashed<K, V, H> {
         self.unlink(slot)
     }
 
-    /// Ask-then-drop: the doomed slots are collected before any is unlinked.
-    fn retain(&mut self, mut keep: impl FnMut(&Entry<K, V>) -> bool) -> usize {
+    /// The rejected slots are collected first: unlinking edits the indexes
+    /// `iter` does not borrow, but the slots it does.
+    fn retain(&mut self, mut keep: impl FnMut(usize, &Entry<K, V>) -> bool) -> usize {
         let doomed: Vec<usize> = self
             .iter()
-            .filter(|(_, entry)| !keep(entry))
+            .filter(|&(slot, entry)| !keep(slot, entry))
             .map(|(slot, _)| slot)
             .collect();
         doomed.into_iter().filter(|&slot| self.unlink(slot)).count()
+    }
+
+    fn marks(&self) -> Vec<bool> {
+        alloc::vec![false; self.slots.len()]
     }
 
     fn iter(&self) -> impl Iterator<Item = (usize, &Entry<K, V>)> {

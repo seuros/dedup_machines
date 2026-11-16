@@ -8,11 +8,11 @@ use std::{cell::RefCell, time::Duration};
 use dedup_machines::{Attempt, Claim, ClaimId, Completion, Dedup, Fixed, Refusal, Storage};
 use magnus::{Error, Integer, RArray, Ruby, Value, prelude::*, typed_data::Obj};
 use matryona_machines::ruby::{
-    Symbols, duration, exact_array, integer, integer_in, keep, nanoseconds, symbol,
+    Symbols, duration, exact_array, integer, integer_in, keep, nanoseconds,
 };
 
 use classes::classes;
-use convert::{Refusals, Stored};
+use convert::{Answer, Answers, Completions, Refusals, Stored};
 
 const CAPACITY: usize = 64;
 /// What `resumed` raises for saved state the core answers `None` to.
@@ -204,7 +204,7 @@ impl Ledger {
                     classes.acquired.get(ruby).funcall("new", (id,))
                 }
                 Ok(Asked::Completed(value)) => classes.completed.get(ruby).funcall("new", (value,)),
-                Ok(Asked::InProgress) => Ok(symbol(ruby, "in_progress").as_value()),
+                Ok(Asked::InProgress) => Ok(Answers::symbol(ruby, Answer::InProgress).as_value()),
                 Err(why) => Ok(refused(ruby, why)),
             },
         )
@@ -241,8 +241,7 @@ impl Ledger {
 
     fn completion(ruby: &Ruby, outcome: Result<Completion, Refusal>) -> Value {
         match outcome {
-            Ok(Completion::Completed) => symbol(ruby, "completed").as_value(),
-            Ok(Completion::AlreadyCompleted) => symbol(ruby, "already_completed").as_value(),
+            Ok(completion) => Completions::symbol(ruby, completion).as_value(),
             Err(why) => refused(ruby, why),
         }
     }
@@ -250,7 +249,7 @@ impl Ledger {
     fn abandon(ruby: &Ruby, this: Obj<Self>, claim: Value) -> Result<Value, Error> {
         let claim = Self::settling(ruby, this, claim)?;
         Ok(match this.core.borrow_mut().abandon(claim) {
-            Ok(()) => symbol(ruby, "abandoned").as_value(),
+            Ok(()) => Answers::symbol(ruby, Answer::Abandoned).as_value(),
             Err(why) => refused(ruby, why),
         })
     }

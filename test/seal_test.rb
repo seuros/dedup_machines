@@ -31,6 +31,13 @@ class SealTest < Minitest::Test
     assert_raises(RangeError) { ClaimId.new(1).with(raw: 0) }
   end
 
+  # The Ledger wraps native data: it has no allocator, and subclassing it
+  # raises TypeError as subclassing a value does.
+  def test_the_ledger_cannot_be_subclassed_or_allocated
+    assert_raises(TypeError) { Class.new(Ledger) }
+    assert_raises(TypeError) { Ledger.allocate }
+  end
+
   # A forged value never reaches the core and never earns a refusal symbol:
   # a leaked subclass is TypeError, a field `Marshal.load` rewrote RangeError.
   def test_forged_values_are_refused_where_the_extension_reads_them
@@ -82,18 +89,36 @@ class SealTest < Minitest::Test
     ledger = Ledger.new
     id = acquire(ledger, 1, 0, 10)
     attempt = Attempt.new(2, 7, nil)
-    readers = { ClaimId => %i[raw], Attempt => %i[key fingerprint], Entry => %i[key claim expires] }
-    originals = readers.flat_map { |klass, names| names.map { [klass, it, klass.instance_method(it)] } }
-    begin
-      originals.each { |klass, name, _| klass.define_method(name) { raise "#{name} reader ran" } }
-      assert_equal :completed, ledger.complete(id, 1)
-      assert_equal :in_progress, ledger.admit(attempt, 1, 10).then { ledger.admit(attempt, 1, 10) }
-      saved = ledger.entries
-      restored = Ledger.resumed(saved, 0, ledger.issued, 1)
-    ensure
-      originals.each { |klass, name, reader| klass.define_method(name, reader) }
+    raising = ->(*names) { names.to_h { |name| [name, -> { raise "#{name} reader ran" }] } }
+    restored = redefining(ClaimId, **raising.(:raw)) do
+      redefining(Attempt, **raising.(:key, :fingerprint)) do
+        redefining(Entry, **raising.(:key, :claim, :expires)) do
+          assert_equal :completed, ledger.complete(id, 1)
+          assert_equal :in_progress, ledger.admit(attempt, 1, 10).then { ledger.admit(attempt, 1, 10) }
+          Ledger.resumed(ledger.entries, 0, ledger.issued, 1)
+        end
+      end
     end
     assert_equal ledger.entries, restored.entries
+  end
+
+  # `ClaimId#scope` reads the id natively: a redefined reader is never
+  # called, and a `raw` rewritten by `Marshal.load` is RangeError.
+  def test_scope_reads_the_id_natively
+    id = ClaimId.new((3 << 48) | 1)
+    begin
+      ClaimId.alias_method(:__original_raw, :raw)
+      ClaimId.remove_method(:raw)
+      ClaimId.define_method(:raw) { raise 'raw reader ran' }
+      assert_equal 3, id.scope
+    ensure
+      ClaimId.remove_method(:raw)
+      ClaimId.alias_method(:raw, :__original_raw)
+      ClaimId.remove_method(:__original_raw)
+    end
+    zero = Marshal.load(Marshal.dump(ClaimId.new(1)).sub("i\x06", "i\x00"))
+    assert_raises(RangeError) { zero.scope }
+    assert_raises(NoMethodError) { DedupMachines.__scope_of_claim(id) }
   end
 
   # The classes the extension resolved at init are pinned: after a

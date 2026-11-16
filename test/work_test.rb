@@ -25,13 +25,11 @@ class WorkTest < Minitest::Test
 
   # Runs the block with `klass.new` replaced by `body`, the way reopening the
   # class could redefine it; the real `new` is `klass.__real_new`.
-  def replacing_new(klass, body)
+  def replacing_new(klass, body, &)
     klass.singleton_class.alias_method(:__real_new, :new)
-    klass.define_singleton_method(:new, &body)
-    yield
+    redefining(klass.singleton_class, new: body, &)
   ensure
-    klass.singleton_class.alias_method(:new, :__real_new)
-    klass.singleton_class.remove_method(:__real_new)
+    replace_method(klass.singleton_class, :__real_new, nil)
   end
 
   # The ledger and a twin given the same history.

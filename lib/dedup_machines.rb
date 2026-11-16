@@ -21,7 +21,8 @@ module DedupMachines
     end
 
     # The scope of the ledger that issued this id.
-    def scope = DedupMachines.__send__(:__claim_scope, raw)
+    # Read natively from the struct, never through the reader.
+    def scope = DedupMachines.__send__(:__scope_of_claim, self)
   end
 
   # The core's `Claim::Acquired(id)`: the key was free and the caller now owns
@@ -74,7 +75,7 @@ end
 require 'dedup_machines_native/dedup_machines_native'
 
 module DedupMachines
-  private_class_method :__claim_scope, :__acquired, :__completed, :__attempt, :__entry
+  private_class_method :__claim_scope, :__scope_of_claim, :__acquired, :__completed, :__attempt, :__entry
 
   # The values are final. `initialize` is where each validates, and a subclass
   # could override it, or `allocate` build an instance that never ran it:
@@ -84,4 +85,7 @@ module DedupMachines
     value.singleton_class.undef_method(:allocate)
     value.define_singleton_method(:inherited) { |_| raise TypeError, "#{value} cannot be subclassed" }
   end
+
+  # The Ledger wraps native data and has no allocator; it is final too.
+  Ledger.define_singleton_method(:inherited) { |_| raise TypeError, "#{Ledger} cannot be subclassed" }
 end

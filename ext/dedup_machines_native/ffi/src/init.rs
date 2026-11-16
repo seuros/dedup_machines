@@ -9,6 +9,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     crate::classes::resolve(ruby, module)?;
     // Private hooks the Data values validate through (see lib/).
     module.define_singleton_method("__claim_scope", function!(convert::claim_scope, 1))?;
+    module.define_singleton_method("__scope_of_claim", function!(convert::scope_of_claim, 1))?;
     module.define_singleton_method("__acquired", function!(convert::check_acquired, 1))?;
     module.define_singleton_method("__completed", function!(convert::check_completed, 1))?;
     module.define_singleton_method("__attempt", function!(convert::check_attempt, 1))?;

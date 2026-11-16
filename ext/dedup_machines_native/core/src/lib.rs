@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 #![doc = include_str!("../README.md")]
 
 #[cfg(feature = "alloc")]
@@ -19,7 +20,7 @@ pub use claim::{Attempt, Claim, ClaimId, Completion, Entry};
 #[cfg(feature = "alloc")]
 pub use hashed::{HashDedup, Hashed};
 pub use refusal::{Refusal, Refused};
-pub use storage::{Fixed, Storage};
+pub use storage::{Fixed, Marks, Storage};
 
 /// Exact-key claim ledger over a storage backend.
 ///
@@ -250,7 +251,7 @@ impl<S: Storage> Ledger<S> {
         // none to remove, a full backend refuses the insert and stores nothing;
         // with one removed, the insert has room (the `Storage` contract).
         if self.store.iter().any(|(_, entry)| !entry.live(now)) {
-            self.store.retain(|entry| entry.live(now));
+            self.store.retain(|_, entry| entry.live(now));
         }
         self.store
             .insert(Entry {
@@ -364,20 +365,27 @@ impl<S: Storage> Ledger<S> {
     /// way, uncounted and without being shown to `dead`: they were already
     /// absent.
     ///
-    /// Ask-then-drop: `dead` is asked about every live key before anything
-    /// is dropped (the [`Storage::retain`] contract), so a `dead` that
-    /// unwinds leaves the ledger as it was. `dead` cannot reach the ledger
+    /// Ask-then-drop: `dead` is asked about every live key, its verdicts
+    /// noted in [`Storage::marks`], before anything is dropped, and it never
+    /// runs inside a backend call. So a `dead` that unwinds leaves the
+    /// ledger as it was, whatever the backend. `dead` cannot reach the ledger
     /// while it runs; a binding whose predicate must (a Ruby block calling
     /// back into the ledger) asks about [`Ledger::store`] first and passes
     /// the verdicts in.
     pub fn expire_where(&mut self, mut dead: impl FnMut(&S::Key) -> bool) -> usize {
         let observed = self.observed;
+        let mut marks = self.store.marks();
+        for (slot, entry) in self.store.iter() {
+            if entry.live(observed) && dead(&entry.key) && !marks.mark(slot) {
+                // Kept: dropping a record nobody marked would be the error.
+                debug_assert!(false, "`marks` holds a mark for every slot `iter` reports");
+            }
+        }
         let mut dropped = 0;
-        self.store.retain(|entry| {
-            let live = entry.live(observed);
-            let drop = live && dead(&entry.key);
-            dropped += usize::from(drop);
-            live && !drop
+        self.store.retain(|slot, entry| {
+            let doomed = marks.marked(slot);
+            dropped += usize::from(doomed);
+            entry.live(observed) && !doomed
         });
         dropped
     }

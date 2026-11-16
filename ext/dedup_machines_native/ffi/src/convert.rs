@@ -1,5 +1,5 @@
 //! Ruby value conversion and refusal names.
-use dedup_machines::{ClaimId, Refusal};
+use dedup_machines::{ClaimId, Completion, Refusal};
 use magnus::{Error, Ruby, Value, prelude::*};
 use matryona_machines::ruby::{
     exact_array_n_with, exact_fields, instant, integer, nanoseconds, optional,
@@ -31,9 +31,15 @@ pub fn claim_id(ruby: &Ruby, value: Value) -> Result<ClaimId, Error> {
     raw_claim_id(ruby, raw)
 }
 
-/// What `ClaimId.new` stores, and `ClaimId#scope`: the scope of a checked id.
+/// What `ClaimId.new` checks: the scope of the id `raw` names.
 pub fn claim_scope(ruby: &Ruby, raw: Value) -> Result<u16, Error> {
     raw_claim_id(ruby, raw).map(ClaimId::scope)
+}
+
+/// `ClaimId#scope`: the id read natively, its `raw` from the struct and
+/// checked again, never through the reader.
+pub fn scope_of_claim(ruby: &Ruby, value: Value) -> Result<u16, Error> {
+    claim_id(ruby, value).map(ClaimId::scope)
 }
 
 /// What `Acquired.new` checks: `id` is a `ClaimId`.
@@ -136,5 +142,30 @@ matryona_machines::symbols! {
         Stale => "stale",
         Concluded => "concluded",
         Mismatch => "mismatch",
+    }
+}
+
+matryona_machines::symbols! {
+    /// The core's completions as Symbols.
+    pub Completions for Completion as "a completion" {
+        Completed => "completed",
+        AlreadyCompleted => "already_completed",
+    }
+}
+
+/// The honoured answers the binding gives as bare Symbols that are not a
+/// core enum's: a claim already in progress, and an abandoned claim
+/// (`abandon` answers `Ok(())`).
+#[derive(Clone, Copy)]
+pub enum Answer {
+    InProgress,
+    Abandoned,
+}
+
+matryona_machines::symbols! {
+    /// [`Answer`] as Symbols.
+    pub Answers for Answer as "an answer" {
+        InProgress => "in_progress",
+        Abandoned => "abandoned",
     }
 }

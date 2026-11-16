@@ -5,7 +5,8 @@ use crate::storage::slots;
 use crate::test_support::{an_unwinding_predicate_drops_nothing, record};
 
 /// Unlike `Fixed`, its `insert` checks nothing: it takes a second record
-/// under a key or a claim id it already holds.
+/// under a key or a claim id it already holds, and its `retain` drops each
+/// record as soon as `keep` rejects it, asking nothing ahead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pair {
     entries: [Option<Entry<u64, u8>>; 2],
@@ -20,6 +21,7 @@ impl Pair {
 impl Storage for Pair {
     type Key = u64;
     type Value = u8;
+    type Marks = [bool; 2];
 
     fn get(&self, slot: usize) -> Option<&Entry<u64, u8>> {
         slots::get(&self.entries, slot)
@@ -45,8 +47,19 @@ impl Storage for Pair {
         slots::remove(&mut self.entries, slot)
     }
 
-    fn retain(&mut self, keep: impl FnMut(&Entry<u64, u8>) -> bool) -> usize {
-        slots::retain(&mut self.entries, keep)
+    fn retain(&mut self, mut keep: impl FnMut(usize, &Entry<u64, u8>) -> bool) -> usize {
+        let mut dropped = 0;
+        for (slot, held) in self.entries.iter_mut().enumerate() {
+            if held.as_ref().is_some_and(|entry| !keep(slot, entry)) {
+                *held = None;
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
+    fn marks(&self) -> [bool; 2] {
+        [false; 2]
     }
 
     fn iter(&self) -> impl Iterator<Item = (usize, &Entry<u64, u8>)> {

@@ -9,11 +9,12 @@ module DedupMachines
   # undefined.
 
   # Private hooks the Data values validate through.
-  def self.__claim_scope: (Integer raw) -> Integer
-  def self.__acquired: (ClaimId id) -> nil
-  def self.__completed: (Integer value) -> nil
-  def self.__attempt: ([Integer, Integer?, Integer?] fields) -> nil
-  def self.__entry: ([Integer, Integer?, Integer?, ClaimId, Integer, Integer?] fields) -> nil
+  private def self.__claim_scope: (Integer raw) -> Integer
+  private def self.__scope_of_claim: (ClaimId claim) -> Integer
+  private def self.__acquired: (ClaimId id) -> nil
+  private def self.__completed: (Integer value) -> nil
+  private def self.__attempt: ([Integer, Integer?, Integer?] fields) -> nil
+  private def self.__entry: ([Integer, Integer?, Integer?, ClaimId, Integer, Integer?] fields) -> nil
 
   # Mirrors the core's `ClaimId`. `new(raw)` is `ClaimId::from_raw`:
   # RangeError for a sequence (the low 48 bits) of zero, which no ledger
@@ -71,6 +72,7 @@ module DedupMachines
     def pending?: () -> bool
   end
 
+  # Final: no allocator, and subclassing raises TypeError.
   class Ledger
     # Every refusal symbol, one per core `Refusal` variant, no catch-all. A
     # refused call changed nothing. Each method below lists exactly the ones
