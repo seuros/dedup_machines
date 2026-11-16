@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.7.0...dedup_machines/v0.7.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* fix wrapped classes at load so building a value runs no Ruby ([e42ba61](https://github.com/seuros/dedup_machines/commit/e42ba6105942758d56eb20ba19dc826785b96ffa))
+
 ## [0.7.0](https://github.com/seuros/dedup_machines/compare/dedup_machines/v0.6.1...dedup_machines/v0.7.0) (2026-11-16)
 
 
